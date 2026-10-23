@@ -121,6 +121,20 @@ pub fn save(data_dir: &Path, current_dir: &Path, title: &str, body: &str) -> io:
     Ok(target)
 }
 
+/// Renombra la carpeta según el slug del título, sin tocar `note.md`.
+pub fn rename(data_dir: &Path, current_dir: &Path, title: &str) -> io::Result<PathBuf> {
+    let slug = slugify(title);
+    if current_dir
+        .file_name()
+        .is_some_and(|name| name == slug.as_str())
+    {
+        return Ok(current_dir.to_path_buf());
+    }
+    let target = data_dir.join(unique_name(data_dir, &slug, Some(current_dir)));
+    fs::rename(current_dir, &target)?;
+    Ok(target)
+}
+
 /// Mueve la carpeta a `<data>/_trash/<nombre>`, con sufijo si ya existe.
 pub fn trash(data_dir: &Path, note_dir: &Path) -> io::Result<()> {
     let Some(name) = note_dir.file_name() else {
@@ -316,6 +330,28 @@ mod tests {
         assert_eq!(dir, note.dir);
         assert!(dir.is_dir());
         assert_eq!(body_of(&dir), "algo");
+    }
+
+    #[test]
+    fn rename_no_toca_el_cuerpo_y_resuelve_colision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path();
+
+        let a = create(data).unwrap();
+        let a = save(data, &a.dir, "primera", "uno").unwrap();
+        let b = create(data).unwrap();
+        let b = save(data, &b.dir, "segunda", "dos").unwrap();
+
+        let movida = rename(data, &a, "Comprar Café").unwrap();
+        assert_eq!(movida.file_name().unwrap(), "comprar-cafe");
+        assert!(!a.exists());
+        assert_eq!(body_of(&movida), "uno");
+
+        let otra = rename(data, &b, "comprar cafe").unwrap();
+        assert_eq!(otra.file_name().unwrap(), "comprar-cafe-2");
+        assert_eq!(body_of(&otra), "dos");
+
+        assert_eq!(rename(data, &otra, "comprar cafe").unwrap(), otra);
     }
 
     #[test]

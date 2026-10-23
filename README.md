@@ -13,15 +13,23 @@ cargo run --release
 
 Ventana inicial 1000x700. Al arrancar abre las mismas tabs de la sesión anterior.
 
+La barra de título y los botones de ventana los dibuja la app: arrastrá la barra
+para mover la ventana, doble clic para maximizar y arrastrá un borde para
+redimensionar.
+
 | Atajo | Acción |
 |---|---|
-| `Ctrl+N` | Nueva nota (`sin-titulo`), abre tab con el título enfocado |
-| `Ctrl+S` | Guardar; si cambió el título, renombra la carpeta |
+| `Ctrl+N` | Nueva nota y renombre inline de la fila |
+| `Ctrl+S` | Guardar el cuerpo de la nota abierta |
 | `Ctrl+F` | Foco al buscador |
-| `Esc` | Limpiar la búsqueda |
+| `Esc` | Cancela el renombre inline; si no hay, limpia la búsqueda |
 | `Ctrl+W` | Cerrar el tab actual |
 
-Click en una nota de la lista la abre en un tab. El `×` de la fila la manda a `_trash/`.
+Click en una nota de la lista la abre en un tab. El lápiz de la fila renombra
+inline (`Enter` confirma, `Esc` cancela, perder foco confirma) y el renombre se
+aplica en disco al instante. El `×` de la fila aparece al pasar el mouse y manda
+la nota a `_trash/`.
+
 Si hay cambios sin guardar, al cerrar el tab (o la ventana) aparece un modal
 Guardar / Descartar / Cancelar.
 
@@ -59,7 +67,7 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 11 tests de storage + 6 de UI
+cargo test            # 12 tests de storage + 9 de UI
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
@@ -67,8 +75,8 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 - `src/store.rs` — acceso a disco sin dependencias: descubrir, leer, guardar
   atómico (`note.md.tmp` + `rename`), renombrar, mover a `_trash`, slug y fold
   de acentos.
-- `src/app.rs` — estado y UI egui: lista ordenada, búsqueda, tabs, modal y
-  rescan al recuperar foco.
+- `src/app.rs` — estado y UI egui: barra de título propia, lista ordenada,
+  búsqueda, tabs, renombre inline, modal y rescan al recuperar foco.
 - `src/main.rs` — arranque, resolución del data dir, ventana.
 
 Los tests de UI usan `egui_kittest`: corren la UI real sin compositor y uno de
@@ -80,3 +88,5 @@ ellos renderiza snapshots con wgpu.
 - Renombrar una carpeta rompe enlaces externos a esa ruta (los adjuntos internos
   seguirán funcionando, porque son relativos).
 - Sin adjuntos todavía: la estructura ya los soporta, la UI no.
+- La barra de título es propia, así que no sigue el tema del escritorio y en
+  Wayland depende de que el compositor acepte la ventana sin decoración nativa.

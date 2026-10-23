@@ -11,7 +11,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 700.0])
-            .with_title("notetake"),
+            .with_title("notetake")
+            // Los botones de ventana y la barra de título los dibuja la app.
+            .with_decorations(false),
         ..Default::default()
     };
 
