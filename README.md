@@ -22,7 +22,8 @@ carpeta de datos y a la papelera.
 La interfaz usa Inter (incrustada, sin dependencias del sistema), grises neutros
 y un único acento teal. El cuerpo se escribe en una columna de 700 px centrada,
 las filas de la lista muestran título y primera línea, y el punto teal junto al
-nombre indica cambios sin guardar.
+nombre indica cambios sin guardar. La nota abierta se marca con una regla teal
+en el margen izquierdo; en el modal, «Guardar» es la acción primaria.
 
 | Atajo | Acción |
 |---|---|
@@ -74,7 +75,7 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 12 tests de storage + 14 de UI
+cargo test            # 12 de storage + 14 de UI + 1 de contraste
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```

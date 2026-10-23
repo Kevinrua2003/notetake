@@ -671,7 +671,9 @@ impl App {
         let show_close = active || prev_hover == Some(idx);
 
         let fill = if active {
-            ui.visuals().selection.bg_fill
+            style::active_fill(ui.visuals())
+        } else if prev_hover == Some(idx) {
+            ui.visuals().widgets.hovered.weak_bg_fill
         } else {
             egui::Color32::TRANSPARENT
         };
@@ -692,9 +694,14 @@ impl App {
                         ui.visuals().weak_text_color()
                     };
                     let name = ui.add(
-                        egui::Label::new(title_job(&title, color, 12.5, dirty))
-                            .truncate()
-                            .sense(egui::Sense::click()),
+                        egui::Label::new(title_job(
+                            &title,
+                            color,
+                            12.5,
+                            dirty.then(|| style::accent(ui.visuals())),
+                        ))
+                        .truncate()
+                        .sense(egui::Sense::click()),
                     );
                     if name.clicked() {
                         self.active = pos;
@@ -715,7 +722,7 @@ impl App {
                 ui.painter().rect_filled(
                     response.rect,
                     6.0,
-                    style::ACCENT.gamma_multiply(0.3 * alpha),
+                    style::accent(ui.visuals()).gamma_multiply(0.3 * alpha),
                 );
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(16));
@@ -772,6 +779,9 @@ impl App {
                         })
                     }),
                 }
+
+                // La regla de la nota activa vive en el margen, no sobre el texto.
+                let rail_x = ui.max_rect().left() - 5.0;
 
                 egui::ScrollArea::vertical()
                     .id_salt("lista-notas")
@@ -839,17 +849,15 @@ impl App {
                                             |ui| {
                                                 ui.vertical(|ui| {
                                                     ui.spacing_mut().item_spacing.y = 2.0;
-                                                    let color = if is_active {
-                                                        ui.visuals().text_color()
-                                                    } else {
-                                                        ui.visuals().strong_text_color()
-                                                    };
+                                                    let color = ui.visuals().text_color();
                                                     ui.add(
                                                         egui::Label::new(title_job(
                                                             &note.title,
                                                             color,
                                                             13.5,
-                                                            dirty,
+                                                            dirty.then(|| {
+                                                                style::accent(ui.visuals())
+                                                            }),
                                                         ))
                                                         .truncate()
                                                         .selectable(false),
@@ -904,12 +912,23 @@ impl App {
                             }
                             if row.hovered() || is_active {
                                 let fill = if is_active {
-                                    ui.visuals().selection.bg_fill
+                                    style::active_fill(ui.visuals())
                                 } else {
                                     ui.visuals().widgets.hovered.weak_bg_fill
                                 };
                                 ui.painter()
                                     .set(bg, egui::Shape::rect_filled(row.rect, 6.0, fill));
+                                if is_active {
+                                    let rule = egui::Rect::from_min_size(
+                                        egui::pos2(rail_x, row.rect.center().y - 9.0),
+                                        egui::vec2(2.0, 18.0),
+                                    );
+                                    ui.painter().rect_filled(
+                                        rule,
+                                        1.0,
+                                        style::accent(ui.visuals()),
+                                    );
+                                }
                             }
                             if row.clicked() {
                                 open = Some(idx);
@@ -1021,9 +1040,24 @@ impl App {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Guardar").clicked() {
-                    choice = Some(Choice::Save);
-                }
+                ui.scope(|ui| {
+                    let widgets = &mut ui.visuals_mut().widgets;
+                    let text = egui::Color32::from_rgb(0xf7, 0xfb, 0xfb);
+                    widgets.inactive.weak_bg_fill = style::ACCENT;
+                    widgets.hovered.weak_bg_fill = style::ACCENT.gamma_multiply(1.15);
+                    widgets.active.weak_bg_fill = style::ACCENT.gamma_multiply(0.9);
+                    for widget in [
+                        &mut widgets.inactive,
+                        &mut widgets.hovered,
+                        &mut widgets.active,
+                    ] {
+                        widget.fg_stroke = egui::Stroke::new(1.0, text);
+                        widget.bg_stroke = egui::Stroke::NONE;
+                    }
+                    if ui.button("Guardar").clicked() {
+                        choice = Some(Choice::Save);
+                    }
+                });
                 if ui.button("Descartar").clicked() {
                     choice = Some(Choice::Discard);
                 }
@@ -1175,7 +1209,12 @@ fn open_folder(path: &Path) -> std::io::Result<()> {
 }
 
 /// Texto con el punto de «sin guardar» al final, truncable como un solo bloque.
-fn title_job(text: &str, color: egui::Color32, size: f32, dirty: bool) -> egui::text::LayoutJob {
+fn title_job(
+    text: &str,
+    color: egui::Color32,
+    size: f32,
+    dot: Option<egui::Color32>,
+) -> egui::text::LayoutJob {
     let format = egui::TextFormat {
         font_id: egui::FontId::proportional(size),
         color,
@@ -1183,12 +1222,12 @@ fn title_job(text: &str, color: egui::Color32, size: f32, dirty: bool) -> egui::
     };
     let mut job = egui::text::LayoutJob::default();
     job.append(text, 0.0, format.clone());
-    if dirty {
+    if let Some(dot) = dot {
         job.append(
             "  •",
             0.0,
             egui::TextFormat {
-                color: style::ACCENT,
+                color: dot,
                 ..format
             },
         );
