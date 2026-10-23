@@ -135,6 +135,11 @@ pub fn rename(data_dir: &Path, current_dir: &Path, title: &str) -> io::Result<Pa
     Ok(target)
 }
 
+/// Carpeta donde van las notas borradas (puede no existir todavía).
+pub fn trash_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(TRASH_DIR)
+}
+
 /// Mueve la carpeta a `<data>/_trash/<nombre>`, con sufijo si ya existe.
 pub fn trash(data_dir: &Path, note_dir: &Path) -> io::Result<()> {
     let Some(name) = note_dir.file_name() else {
@@ -143,10 +148,10 @@ pub fn trash(data_dir: &Path, note_dir: &Path) -> io::Result<()> {
             "la ruta de la nota no tiene nombre de carpeta",
         ));
     };
-    let trash_dir = data_dir.join(TRASH_DIR);
-    fs::create_dir_all(&trash_dir)?;
+    let target_dir = trash_dir(data_dir);
+    fs::create_dir_all(&target_dir)?;
     let name = name.to_string_lossy();
-    let target = trash_dir.join(unique_name(&trash_dir, &name, None));
+    let target = target_dir.join(unique_name(&target_dir, &name, None));
     fs::rename(note_dir, target)
 }
 

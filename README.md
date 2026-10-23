@@ -15,7 +15,9 @@ Ventana inicial 1000x700. Al arrancar abre las mismas tabs de la sesión anterio
 
 La barra de título y los botones de ventana los dibuja la app: arrastrá la barra
 para mover la ventana, doble clic para maximizar y arrastrá un borde para
-redimensionar.
+redimensionar. La hamburguesa de la izquierda abre los ajustes: tema
+(claro/oscuro/sistema), orden de la lista (alfabético/reciente) y acceso a la
+carpeta de datos y a la papelera.
 
 | Atajo | Acción |
 |---|---|
@@ -67,7 +69,7 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 12 tests de storage + 9 de UI
+cargo test            # 12 tests de storage + 11 de UI
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
@@ -75,8 +77,9 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 - `src/store.rs` — acceso a disco sin dependencias: descubrir, leer, guardar
   atómico (`note.md.tmp` + `rename`), renombrar, mover a `_trash`, slug y fold
   de acentos.
-- `src/app.rs` — estado y UI egui: barra de título propia, lista ordenada,
-  búsqueda, tabs, renombre inline, modal y rescan al recuperar foco.
+- `src/app.rs` — estado y UI egui: barra de título propia, ajustes (tema, orden
+  y carpetas), lista, búsqueda, tabs, renombre inline, modal y rescan al
+  recuperar foco.
 - `src/main.rs` — arranque, resolución del data dir, ventana.
 
 Los tests de UI usan `egui_kittest`: corren la UI real sin compositor y uno de
@@ -90,3 +93,6 @@ ellos renderiza snapshots con wgpu.
 - Sin adjuntos todavía: la estructura ya los soporta, la UI no.
 - La barra de título es propia, así que no sigue el tema del escritorio y en
   Wayland depende de que el compositor acepte la ventana sin decoración nativa.
+- Tema y orden se guardan en el `app.ron` de eframe; si matás el proceso a mano
+  justo después de cambiarlos, se pierde la preferencia (la UI igual la aplica
+  en esa sesión).

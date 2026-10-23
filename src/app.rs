@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use eframe::egui;
@@ -11,8 +11,62 @@ const STORAGE_KEY: &str = "notetake";
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Persisted {
+    #[serde(default)]
     tabs: Vec<String>,
+    #[serde(default)]
     active: Option<String>,
+    #[serde(default)]
+    theme: Theme,
+    #[serde(default)]
+    order: Order,
+}
+
+/// Tema de la app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::System => "Sistema",
+            Self::Light => "Claro",
+            Self::Dark => "Oscuro",
+        }
+    }
+
+    fn preference(self) -> egui::ThemePreference {
+        match self {
+            Self::System => egui::ThemePreference::System,
+            Self::Light => egui::ThemePreference::Light,
+            Self::Dark => egui::ThemePreference::Dark,
+        }
+    }
+}
+
+/// Orden de la lista de notas.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum Order {
+    #[default]
+    Alphabetical,
+    Recent,
+}
+
+impl Order {
+    const ALL: [Self; 2] = [Self::Alphabetical, Self::Recent];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Alphabetical => "Alfabético",
+            Self::Recent => "Reciente",
+        }
+    }
 }
 
 /// Acción de cierre que quedó esperando resolución del modal.
@@ -46,6 +100,10 @@ pub struct App {
     renaming: Option<usize>,
     rename_text: String,
     rename_focus: bool,
+    theme: Theme,
+    order: Order,
+    /// Último tema aplicado al contexto, para no tocar las opciones cada frame.
+    applied_theme: Option<Theme>,
     maximized: bool,
     pending: Option<CloseTarget>,
     close_now: bool,
@@ -59,7 +117,7 @@ impl App {
         if let Some(storage) = cc.storage
             && let Some(persisted) = eframe::get_value::<Persisted>(storage, STORAGE_KEY)
         {
-            app.restore_tabs(persisted);
+            app.restore(persisted);
         }
 
         app
@@ -80,6 +138,9 @@ impl App {
             renaming: None,
             rename_text: String::new(),
             rename_focus: false,
+            theme: Theme::default(),
+            order: Order::default(),
+            applied_theme: None,
             maximized: false,
             pending: None,
             close_now: false,
@@ -87,7 +148,9 @@ impl App {
         }
     }
 
-    fn restore_tabs(&mut self, persisted: Persisted) {
+    fn restore(&mut self, persisted: Persisted) {
+        self.theme = persisted.theme;
+        self.order = persisted.order;
         for title in persisted.tabs {
             if let Some(idx) = self.notes.iter().position(|note| note.title == title)
                 && !self.tabs.contains(&idx)
@@ -428,8 +491,8 @@ impl App {
                 );
 
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(6.0);
-                    ui.weak("notetake");
+                    ui.add_space(4.0);
+                    self.settings_button(ui);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
@@ -459,6 +522,77 @@ impl App {
                     self.toggle_maximized(ui.ctx());
                 }
             });
+    }
+
+    fn settings_button(&mut self, ui: &mut egui::Ui) {
+        let response = icon_button(ui, Icon::Menu, 30.0, "Ajustes", false);
+        if egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response)) {
+            ui.painter().rect_filled(
+                response.rect,
+                4.0,
+                ui.visuals().widgets.hovered.weak_bg_fill,
+            );
+            paint_icon(
+                ui.painter(),
+                Icon::Menu,
+                response.rect,
+                ui.visuals().strong_text_color(),
+            );
+        }
+
+        let mut theme = self.theme;
+        let mut order = self.order;
+        let mut open_data = false;
+        let mut open_trash = false;
+
+        egui::Popup::menu(&response).show(|ui| {
+            ui.set_min_width(190.0);
+            ui.menu_button("Tema", |ui| {
+                for option in Theme::ALL {
+                    if ui.radio(theme == option, option.label()).clicked() {
+                        theme = option;
+                        ui.close();
+                    }
+                }
+            });
+            ui.menu_button("Orden", |ui| {
+                for option in Order::ALL {
+                    if ui.radio(order == option, option.label()).clicked() {
+                        order = option;
+                        ui.close();
+                    }
+                }
+            });
+            ui.separator();
+            if ui.button("Abrir carpeta de datos").clicked() {
+                open_data = true;
+                ui.close();
+            }
+            if ui.button("Abrir papelera").clicked() {
+                open_trash = true;
+                ui.close();
+            }
+        });
+
+        self.theme = theme;
+        self.order = order;
+        if open_data {
+            let dir = self.data_dir.clone();
+            self.open_dir(&dir);
+        }
+        if open_trash {
+            let trash = store::trash_dir(&self.data_dir);
+            match std::fs::create_dir_all(&trash) {
+                Ok(()) => self.open_dir(&trash),
+                Err(err) => self.error = Some(format!("No se pudo crear la papelera: {err}")),
+            }
+        }
+    }
+
+    fn open_dir(&mut self, path: &Path) {
+        if let Err(err) = open_folder(path) {
+            self.error = Some(format!("No se pudo abrir «{}»: {err}", path.display()));
+        }
     }
 
     fn tabs_bar(&mut self, ui: &mut egui::Ui) {
@@ -584,8 +718,18 @@ impl App {
                 ui.separator();
 
                 let query = store::fold(&self.search);
-                let mut order: Vec<usize> = (0..self.notes.len()).collect();
-                order.sort_by_cached_key(|&idx| store::fold(&self.notes[idx].title));
+                let mut indices: Vec<usize> = (0..self.notes.len()).collect();
+                match self.order {
+                    Order::Alphabetical => {
+                        indices.sort_by_cached_key(|&idx| store::fold(&self.notes[idx].title));
+                    }
+                    Order::Recent => indices.sort_by(|&a, &b| {
+                        self.notes[b].mtime.cmp(&self.notes[a].mtime).then_with(|| {
+                            store::fold(&self.notes[a].title)
+                                .cmp(&store::fold(&self.notes[b].title))
+                        })
+                    }),
+                }
 
                 egui::ScrollArea::vertical()
                     .id_salt("lista-notas")
@@ -594,7 +738,7 @@ impl App {
                         hovered = None;
                         let mut visibles = 0;
 
-                        for idx in order {
+                        for idx in indices {
                             let note = &self.notes[idx];
                             if !query.is_empty()
                                 && !store::fold(&note.title).contains(&query)
@@ -851,6 +995,10 @@ impl App {
     fn root_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
 
+        if self.applied_theme != Some(self.theme) {
+            ctx.set_theme(self.theme.preference());
+            self.applied_theme = Some(self.theme);
+        }
         if let Some(maximized) = ctx.input(|input| input.viewport().maximized) {
             self.maximized = maximized;
         }
@@ -926,8 +1074,31 @@ impl eframe::App for App {
                 .get(self.active)
                 .and_then(|&idx| self.notes.get(idx))
                 .map(|note| note.title.clone()),
+            theme: self.theme,
+            order: self.order,
         };
         eframe::set_value(storage, STORAGE_KEY, &persisted);
+    }
+}
+
+/// Abre una carpeta en el gestor de archivos; `gio` es el respaldo de `xdg-open`.
+fn open_folder(path: &Path) -> std::io::Result<()> {
+    if matches!(
+        std::process::Command::new("xdg-open").arg(path).status(),
+        Ok(status) if status.success()
+    ) {
+        return Ok(());
+    }
+    match std::process::Command::new("gio")
+        .arg("open")
+        .arg(path)
+        .status()
+    {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(std::io::Error::other(format!(
+            "gio open terminó con {status}"
+        ))),
+        Err(err) => Err(err),
     }
 }
 
@@ -953,6 +1124,7 @@ fn snippet(body: &str) -> String {
 
 #[derive(Clone, Copy)]
 enum Icon {
+    Menu,
     Plus,
     Pencil,
     Close,
@@ -997,6 +1169,18 @@ fn paint_icon(painter: &egui::Painter, icon: Icon, rect: egui::Rect, color: egui
     let s = rect.width();
 
     match icon {
+        Icon::Menu => {
+            for i in -1..=1 {
+                let y = center.y + i as f32 * s * 0.16;
+                painter.line_segment(
+                    [
+                        egui::pos2(center.x - s * 0.22, y),
+                        egui::pos2(center.x + s * 0.22, y),
+                    ],
+                    stroke,
+                );
+            }
+        }
         Icon::Close => {
             let r = s * 0.22;
             painter.line_segment(
@@ -1175,6 +1359,53 @@ mod ui_tests {
     }
 
     #[test]
+    fn ajustes_cambia_el_tema() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("Ajustes").click();
+        h.run();
+        h.get_by_label("Tema").click();
+        h.run();
+        h.get_by_label("Oscuro").click();
+        h.run();
+
+        assert_eq!(h.state().theme, Theme::Dark);
+        assert_eq!(
+            h.ctx.options(|options| options.theme_preference),
+            egui::ThemePreference::Dark
+        );
+    }
+
+    #[test]
+    fn ajustes_cambia_el_orden_de_la_lista() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "")]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        seed(tmp.path(), &[("nota-b", "")]);
+        let mut h = harness(tmp.path());
+
+        assert!(
+            h.get_by_label("nota-a").rect().top() < h.get_by_label("nota-b").rect().top(),
+            "por defecto va alfabético"
+        );
+
+        h.get_by_label("Ajustes").click();
+        h.run();
+        h.get_by_label("Orden").click();
+        h.run();
+        h.get_by_label("Reciente").click();
+        h.run();
+
+        assert_eq!(h.state().order, Order::Recent);
+        assert!(
+            h.get_by_label("nota-b").rect().top() < h.get_by_label("nota-a").rect().top(),
+            "la más reciente va arriba"
+        );
+    }
+
+    #[test]
     fn esc_cancela_el_renombre() {
         let tmp = tempfile::tempdir().unwrap();
         seed(tmp.path(), &[("nota-a", "")]);
@@ -1341,6 +1572,15 @@ mod ui_tests {
         h.run();
         let editando = h.render().expect("render wgpu");
         editando.save("/tmp/opencode/kt-rename.png").unwrap();
+        h.key_press(egui::Key::Escape);
+        h.run();
+
+        h.get_by_label("Ajustes").click();
+        h.run();
+        h.get_by_label("Tema").click();
+        h.run();
+        let menu = h.render().expect("render wgpu");
+        menu.save("/tmp/opencode/kt-menu.png").unwrap();
         h.key_press(egui::Key::Escape);
         h.run();
 
