@@ -168,14 +168,14 @@ struct Note {
     dir: PathBuf,       // carpeta actual (cambia al renombrar)
     title: String,      // = nombre de carpeta, editable
     body: String,
-    dirty: bool,
     mtime: SystemTime,
 }
 
 struct App {
-    notes: Vec<Note>,   // orden de carga, nunca se reordena
-    tabs: Vec<usize>,   // índices a notes
+    notes: Vec<Note>,           // orden de carga, nunca se reordena
+    tabs: Vec<usize>,           // índices a notes
     active: usize,
+    dirty: HashSet<PathBuf>,    // carpetas con cambios sin guardar
     search: String,
 }
 ```
