@@ -88,12 +88,36 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 - `src/app.rs` — estado y UI egui: barra de título propia, ajustes (tema, orden
   y carpetas), lista, búsqueda, tabs, renombre inline, modal y rescan al
   recuperar foco.
-- `src/main.rs` — arranque, resolución del data dir, ventana.
+- `src/main.rs` — arranque, resolución del data dir, ventana e icono.
+- `assets/icon.png` — icono de la app (512 px, esquinas redondeadas).
+- `assets/notetake.desktop` — entrada de escritorio para el icono del dock.
 - `assets/InterVariable.ttf` — fuente incrustada; licencia OFL en
   `assets/Inter-OFL.txt`.
 
 Los tests de UI usan `egui_kittest`: corren la UI real sin compositor y uno de
 ellos renderiza snapshots con wgpu.
+
+### Icono en el dock (Linux/Wayland)
+
+`with_icon` cubre X11 y Windows. En Wayland el compositor ignora el icono de
+ventana y busca `notetake.desktop` por el `app_id` (`notetake`).
+
+GNOME descarta las entradas cuyo `Exec` no exista en `PATH`, y ahí vuelve al
+icono genérico: con solo `cargo run` el binario no está instalado. Instalalo una
+vez:
+
+```bash
+cargo install --path . --root ~/.local
+mkdir -p ~/.local/share/icons/hicolor/512x512/apps
+cp assets/icon.png ~/.local/share/icons/hicolor/512x512/apps/notetake.png
+cp assets/notetake.desktop ~/.local/share/applications/
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+update-desktop-database ~/.local/share/applications
+```
+
+Con eso el icono aparece también al correr `cargo run`, porque la asociación es
+por `app_id` y no por el ejecutable. Si el dock sigue mostrando el genérico,
+cerrar sesión una vez: GNOME cachea las entradas al iniciar.
 
 ## Límites conocidos
 

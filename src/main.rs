@@ -9,12 +9,18 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
 
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([1000.0, 700.0])
+        .with_title("notetake")
+        .with_app_id("notetake")
+        // Los botones de ventana y la barra de título los dibuja la app.
+        .with_decorations(false);
+    if let Some(icon) = app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 700.0])
-            .with_title("notetake")
-            // Los botones de ventana y la barra de título los dibuja la app.
-            .with_decorations(false),
+        viewport,
         ..Default::default()
     };
 
@@ -23,4 +29,17 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, dir)))),
     )
+}
+
+/// Icono de ventana y barra de tareas. En Wayland el compositor lo busca por
+/// `app_id` en `notetake.desktop`; ver README.
+fn app_icon() -> Option<eframe::egui::IconData> {
+    let img =
+        image::load_from_memory(include_bytes!("../assets/icon.png")).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(eframe::egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
 }

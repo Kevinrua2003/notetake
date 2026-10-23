@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=notetake
+Comment=Notas de escritorio, una carpeta por nota
+Exec=notetake
+StartupWMClass=notetake
+Icon=notetake
+Terminal=false
+Categories=Utility;TextEditor;
