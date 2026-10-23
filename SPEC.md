@@ -195,6 +195,16 @@ struct App {
 - Movimiento a `_trash` con colisión.
 - Fold de acentos para búsqueda.
 
+`app.rs` con `egui_kittest` (UI real, sin compositor):
+
+- Click en la fila abre el tab.
+- Escribir marca sucio y no toca el disco; `Ctrl+S` guarda.
+- Renombrar el título + `Ctrl+S` renombra la carpeta.
+- `Ctrl+F` + texto filtra por título y cuerpo; `Esc` limpia.
+- `Ctrl+W` sobre tab sucio abre el modal; «Descartar» cierra sin escribir.
+
+Snapshots renderizados con wgpu (`snapshot_estados_renderizados`) para inspección visual.
+
 Verificación manual: `NOTETAKE_DIR=/tmp/opencode/nt-test cargo run`, nunca contra el directorio real.
 
 ## Riesgos aceptados

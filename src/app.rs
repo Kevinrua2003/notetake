@@ -49,7 +49,19 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, data_dir: PathBuf) -> Self {
-        let mut app = Self {
+        let mut app = Self::load(data_dir);
+
+        if let Some(storage) = cc.storage
+            && let Some(persisted) = eframe::get_value::<Persisted>(storage, STORAGE_KEY)
+        {
+            app.restore_tabs(persisted);
+        }
+
+        app
+    }
+
+    fn load(data_dir: PathBuf) -> Self {
+        Self {
             notes: store::discover(&data_dir),
             data_dir,
             tabs: Vec::new(),
@@ -63,15 +75,7 @@ impl App {
             pending: None,
             close_now: false,
             was_focused: true,
-        };
-
-        if let Some(storage) = cc.storage
-            && let Some(persisted) = eframe::get_value::<Persisted>(storage, STORAGE_KEY)
-        {
-            app.restore_tabs(persisted);
         }
-
-        app
     }
 
     fn restore_tabs(&mut self, persisted: Persisted) {
@@ -430,7 +434,7 @@ impl App {
                                             |ui| {
                                                 let close = ui.add_visible(
                                                     show_close,
-                                                    egui::Button::new("✕").frame(false),
+                                                    egui::Button::new("×").frame(false),
                                                 );
                                                 if close.clicked() {
                                                     delete = Some(idx);
@@ -496,7 +500,7 @@ impl App {
                         if ui.selectable_label(self.active == pos, label).clicked() {
                             self.active = pos;
                         }
-                        if ui.add(egui::Button::new("✕").frame(false)).clicked() {
+                        if ui.add(egui::Button::new("×").frame(false)).clicked() {
                             close = Some(idx);
                         }
                     }
@@ -616,10 +620,9 @@ impl App {
             None => self.pending = Some(target),
         }
     }
-}
 
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// Cuerpo de la UI, compartido entre eframe y los tests de `egui_kittest`.
+    fn root_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
 
         self.rescan_on_focus(&ctx);
@@ -640,6 +643,12 @@ impl eframe::App for App {
         if self.close_now {
             ctx.request_repaint();
         }
+    }
+}
+
+impl eframe::App for App {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.root_ui(ui);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -676,5 +685,195 @@ fn snippet(body: &str) -> String {
         short
     } else {
         text
+    }
+}
+
+#[cfg(test)]
+mod ui_tests {
+    use super::*;
+    use egui::Pos2;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    fn seed(dir: &std::path::Path, notes: &[(&str, &str)]) {
+        for (name, body) in notes {
+            let path = dir.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("note.md"), body).unwrap();
+        }
+    }
+
+    fn harness(dir: &std::path::Path) -> Harness<'static, App> {
+        let app = App::load(dir.to_path_buf());
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1000.0, 700.0))
+            .build_ui_state(|ui, app: &mut App| app.root_ui(ui), app);
+        harness.run();
+        harness
+    }
+
+    fn click(harness: &mut Harness<'static, App>, pos: Pos2) {
+        harness.hover_at(pos);
+        harness.drag_at(pos);
+        harness.drop_at(pos);
+        harness.run();
+    }
+
+    #[test]
+    fn abre_tab_al_clickear_la_fila() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        click(&mut h, Pos2::new(100.0, 68.0));
+
+        assert_eq!(h.state().tabs.len(), 1, "la nota debería abrirse en un tab");
+        assert_eq!(h.state().notes[0].title, "nota-a");
+    }
+
+    #[test]
+    fn edita_y_guarda_con_ctrl_s() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        click(&mut h, Pos2::new(100.0, 68.0));
+        click(&mut h, Pos2::new(600.0, 300.0));
+        h.event(egui::Event::Text("dos".to_owned()));
+        h.run();
+
+        assert!(
+            h.state().is_dirty(0),
+            "escribir debería marcar la nota sucia"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            "uno\n",
+            "no debería guardarse antes de Ctrl+S"
+        );
+
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        h.run();
+
+        assert!(!h.state().is_dirty(0));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            "uno\ndos"
+        );
+    }
+
+    #[test]
+    fn renombra_carpeta_al_guardar_titulo_nuevo() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("sin-titulo", "")]);
+        let mut h = harness(tmp.path());
+
+        click(&mut h, Pos2::new(100.0, 68.0));
+        click(&mut h, Pos2::new(600.0, 65.0));
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.event(egui::Event::Text("comprar pan".to_owned()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+        h.run();
+
+        assert!(tmp.path().join("comprar-pan/note.md").is_file());
+        assert!(!tmp.path().join("sin-titulo").exists());
+        assert_eq!(h.state().notes[0].title, "comprar-pan");
+    }
+
+    #[test]
+    fn busqueda_filtra_titulo_y_cuerpo() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(
+            tmp.path(),
+            &[
+                ("comprar-cafe", "leche\n"),
+                ("ideas", "una nota sobre cafe\n"),
+            ],
+        );
+        let mut h = harness(tmp.path());
+
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+        h.run();
+        h.event(egui::Event::Text("cafe".to_owned()));
+        h.run();
+
+        assert_eq!(h.state().search, "cafe");
+        // Ambos matchean: uno por título, otro por cuerpo.
+        let visibles = h
+            .state()
+            .notes
+            .iter()
+            .filter(|note| {
+                let q = store::fold(&h.state().search);
+                store::fold(&note.title).contains(&q) || store::fold(&note.body).contains(&q)
+            })
+            .count();
+        assert_eq!(visibles, 2);
+
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().search.is_empty());
+    }
+
+    #[test]
+    fn modal_al_cerrar_tab_sucio_y_descartar() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        click(&mut h, Pos2::new(100.0, 68.0));
+        click(&mut h, Pos2::new(600.0, 300.0));
+        h.event(egui::Event::Text("cambio".to_owned()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        h.run();
+
+        assert!(
+            h.query_by_label("Cambios sin guardar").is_some(),
+            "el modal debería estar visible"
+        );
+
+        h.get_by_label("Descartar").click();
+        h.run();
+
+        assert!(h.state().tabs.is_empty(), "el tab debería cerrarse");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            "uno\n",
+            "descartar no debe escribir en disco"
+        );
+    }
+
+    #[test]
+    fn snapshot_estados_renderizados() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(
+            tmp.path(),
+            &[
+                ("comprar-cafe", "Leche\nPan\n"),
+                ("idea-app", "App de notas en Rust con egui.\n"),
+                ("reunion-lunes", "Lunes 10:00\nMetricas del sprint\n"),
+            ],
+        );
+        let app = App::load(tmp.path().to_path_buf());
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1000.0, 700.0))
+            .with_pixels_per_point(1.0)
+            .wgpu()
+            .build_ui_state(|ui, app: &mut App| app.root_ui(ui), app);
+        h.run();
+
+        click(&mut h, Pos2::new(100.0, 68.0));
+        click(&mut h, Pos2::new(600.0, 300.0));
+        h.event(egui::Event::Text("texto sucio".to_owned()));
+        h.run();
+        let limpio = h.render().expect("render wgpu");
+        limpio.save("/tmp/opencode/kt-dirty.png").unwrap();
+
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        h.run();
+        let modal = h.render().expect("render wgpu");
+        modal.save("/tmp/opencode/kt-modal.png").unwrap();
     }
 }
