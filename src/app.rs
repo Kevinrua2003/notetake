@@ -416,49 +416,20 @@ impl App {
     }
 
     fn title_bar(&mut self, ui: &mut egui::Ui) {
-        let mut close_tab = None;
-        let mut hovered_tab = None;
-        let prev_hover = self.hovered_tab;
-
         egui::Panel::top("barra-titulo")
             .exact_size(38.0)
             .show(ui, |ui| {
                 let bar = ui.max_rect();
-                // El fondo arrastra la ventana; tabs y botones se dibujan encima.
+                // El fondo arrastra la ventana; los botones se dibujan encima.
                 let drag = ui.interact(
                     bar,
                     egui::Id::unique("arrastre-ventana"),
                     egui::Sense::click_and_drag(),
                 );
 
-                let controls_w = 3.0 * 30.0 + 16.0;
                 ui.horizontal_centered(|ui| {
                     ui.add_space(6.0);
-                    let tabs_w = (ui.available_width() - controls_w).max(0.0);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(tabs_w, 38.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            if self.tabs.is_empty() {
-                                ui.weak("notetake");
-                                return;
-                            }
-                            egui::ScrollArea::horizontal()
-                                .id_salt("tabs")
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        for pos in 0..self.tabs.len() {
-                                            let (close, hovered) =
-                                                self.tab_pill(ui, pos, prev_hover);
-                                            close_tab = close_tab.or(close);
-                                            if hovered {
-                                                hovered_tab = Some(self.tabs[pos]);
-                                            }
-                                        }
-                                    });
-                                });
-                        },
-                    );
+                    ui.weak("notetake");
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
@@ -488,6 +459,33 @@ impl App {
                     self.toggle_maximized(ui.ctx());
                 }
             });
+    }
+
+    fn tabs_bar(&mut self, ui: &mut egui::Ui) {
+        if self.tabs.is_empty() {
+            self.hovered_tab = None;
+            return;
+        }
+
+        let mut close_tab = None;
+        let mut hovered_tab = None;
+        let prev_hover = self.hovered_tab;
+
+        ui.add_space(2.0);
+        egui::ScrollArea::horizontal()
+            .id_salt("tabs")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for pos in 0..self.tabs.len() {
+                        let (close, hovered) = self.tab_pill(ui, pos, prev_hover);
+                        close_tab = close_tab.or(close);
+                        if hovered {
+                            hovered_tab = Some(self.tabs[pos]);
+                        }
+                    }
+                });
+            });
+        ui.add_space(2.0);
 
         self.hovered_tab = hovered_tab;
         if let Some(idx) = close_tab {
@@ -757,6 +755,9 @@ impl App {
 
     fn editor_panel(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show(ui, |ui| {
+            self.tabs_bar(ui);
+            ui.separator();
+
             if let Some(error) = self.error.clone() {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
