@@ -123,6 +123,12 @@ impl App {
             app.restore(persisted);
         }
 
+        // El estilo debe estar listo antes del primer frame: el Ui raíz se crea
+        // con el estilo vigente y una nota restaurada ya pide el estilo "editor".
+        style::install(&cc.egui_ctx);
+        cc.egui_ctx.set_theme(app.theme.preference());
+        app.applied_theme = Some(app.theme);
+
         app
     }
 
@@ -1114,6 +1120,8 @@ impl App {
         if self.applied_theme != Some(self.theme) {
             style::install(&ctx);
             ctx.set_theme(self.theme.preference());
+            // El Ui raíz ya se creó con el estilo anterior; este frame también lo usa.
+            *ui.style_mut() = (*ctx.global_style()).clone();
             self.applied_theme = Some(self.theme);
         }
         if let Some(maximized) = ctx.input(|input| input.viewport().maximized) {
@@ -1444,6 +1452,23 @@ mod ui_tests {
 
         assert_eq!(h.state().tabs.len(), 1, "la nota debería abrirse en un tab");
         assert_eq!(h.state().notes[0].title, "nota-a");
+    }
+
+    #[test]
+    fn primera_frame_con_nota_restaurada() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+
+        // Sin `run()` previo: reproduce una sesión restaurada, donde el primer
+        // frame ya dibuja el editor.
+        let mut app = App::load(tmp.path().to_path_buf());
+        app.open_tab(0);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1000.0, 700.0))
+            .build_ui_state(|ui, app: &mut App| app.root_ui(ui), app);
+        h.run();
+
+        assert_eq!(h.state().tabs.len(), 1);
     }
 
     #[test]
