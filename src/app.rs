@@ -995,23 +995,35 @@ impl App {
                 return;
             };
 
-            let width = style::READING_WIDTH.min(ui.available_width());
-            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                ui.add_space(18.0);
-                let size = egui::vec2(width, ui.available_height() - 18.0);
-                let body = ui.add_sized(
-                    size,
-                    egui::TextEdit::multiline(&mut self.notes[idx].body)
-                        .hint_text("Escribí acá…")
-                        .font(egui::TextStyle::Name("editor".into()))
-                        .frame(egui::Frame::NONE)
-                        .margin(egui::Margin::same(0))
-                        .text_color(ui.visuals().text_color()),
-                );
-                if body.changed() {
-                    self.mark_dirty(idx);
-                }
-            });
+            let width = style::READING_WIDTH.min(ui.available_width() - 16.0);
+            ui.add_space(18.0);
+            // El TextEdit crece con el contenido; el ScrollArea se encarga del resto.
+            egui::ScrollArea::vertical()
+                .id_salt("cuerpo")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    // Mínimo: alto del viewport, para que un click en cualquier
+                    // parte del área vacía caiga dentro del editor.
+                    // shortcut: fila estimada en 22 px (15 px + 4 de aire);
+                    // si cambia la escala del editor, recalcular.
+                    let rows = (((ui.available_height() - 40.0) / 22.0).floor() as usize).max(1);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        let body = ui.add(
+                            egui::TextEdit::multiline(&mut self.notes[idx].body)
+                                .desired_rows(rows)
+                                .hint_text("Escribí acá…")
+                                .font(egui::TextStyle::Name("editor".into()))
+                                .frame(egui::Frame::NONE)
+                                .margin(egui::Margin::same(0))
+                                .text_color(ui.visuals().text_color())
+                                .desired_width(width),
+                        );
+                        if body.changed() {
+                            self.mark_dirty(idx);
+                        }
+                        ui.add_space(32.0);
+                    });
+                });
         });
     }
 
