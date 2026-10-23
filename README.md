@@ -19,6 +19,11 @@ redimensionar. La hamburguesa de la izquierda abre los ajustes: tema
 (claro/oscuro/sistema), orden de la lista (alfabético/reciente) y acceso a la
 carpeta de datos y a la papelera.
 
+La interfaz usa Inter (incrustada, sin dependencias del sistema), grises neutros
+y un único acento teal. El cuerpo se escribe en una columna de 700 px centrada,
+las filas de la lista muestran título y primera línea, y el punto teal junto al
+nombre indica cambios sin guardar.
+
 | Atajo | Acción |
 |---|---|
 | `Ctrl+N` | Nueva nota y renombre inline de la fila |
@@ -69,11 +74,13 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 12 tests de storage + 11 de UI
+cargo test            # 12 tests de storage + 14 de UI
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
 
+- `src/style.rs` — identidad visual: fuente Inter, escala, neutros claro/oscuro,
+  acento y métricas (ancho de lectura, sidebar, barra de título).
 - `src/store.rs` — acceso a disco sin dependencias: descubrir, leer, guardar
   atómico (`note.md.tmp` + `rename`), renombrar, mover a `_trash`, slug y fold
   de acentos.
@@ -81,6 +88,8 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
   y carpetas), lista, búsqueda, tabs, renombre inline, modal y rescan al
   recuperar foco.
 - `src/main.rs` — arranque, resolución del data dir, ventana.
+- `assets/InterVariable.ttf` — fuente incrustada; licencia OFL en
+  `assets/Inter-OFL.txt`.
 
 Los tests de UI usan `egui_kittest`: corren la UI real sin compositor y uno de
 ellos renderiza snapshots con wgpu.

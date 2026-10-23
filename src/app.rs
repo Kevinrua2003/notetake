@@ -5,6 +5,7 @@ use std::time::SystemTime;
 use eframe::egui;
 
 use crate::store::{self, Note};
+use crate::style;
 
 /// Clave usada en el storage de eframe.
 const STORAGE_KEY: &str = "notetake";
@@ -104,6 +105,8 @@ pub struct App {
     order: Order,
     /// Último tema aplicado al contexto, para no tocar las opciones cada frame.
     applied_theme: Option<Theme>,
+    /// Momento del último guardado, para el destello del tab.
+    saved_flash: Option<std::time::Instant>,
     maximized: bool,
     pending: Option<CloseTarget>,
     close_now: bool,
@@ -141,6 +144,7 @@ impl App {
             theme: Theme::default(),
             order: Order::default(),
             applied_theme: None,
+            saved_flash: None,
             maximized: false,
             pending: None,
             close_now: false,
@@ -320,6 +324,7 @@ impl App {
             note.mtime = mtime;
         }
         self.dirty.remove(&old_dir);
+        self.saved_flash = Some(std::time::Instant::now());
         Ok(())
     }
 
@@ -383,7 +388,9 @@ impl App {
             save = input.consume_key(egui::Modifiers::COMMAND, egui::Key::S);
             focus_search = input.consume_key(egui::Modifiers::COMMAND, egui::Key::F);
             close_tab = input.consume_key(egui::Modifiers::COMMAND, egui::Key::W);
-            clear_search = input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            // Con búsqueda vacía el Esc queda para que egui cierre menús y popups.
+            clear_search = (self.renaming.is_some() || !self.search.is_empty())
+                && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
         });
 
         if new_note {
@@ -478,9 +485,27 @@ impl App {
         }
     }
 
+    /// Líneas de 1 px bajo la barra de título y a la derecha del sidebar.
+    fn paint_hairlines(&self, ui: &egui::Ui) {
+        let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+        let rect = ui.max_rect();
+        let top = rect.top() + style::TITLE_HEIGHT;
+        ui.painter().hline(rect.x_range(), top, stroke);
+        ui.painter().vline(
+            rect.left() + style::SIDEBAR_WIDTH,
+            egui::Rangef::new(top, rect.bottom()),
+            stroke,
+        );
+    }
+
     fn title_bar(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("barra-titulo")
-            .exact_size(38.0)
+            .exact_size(style::TITLE_HEIGHT)
+            .frame(
+                egui::Frame::NONE
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::symmetric(2, 0)),
+            )
             .show(ui, |ui| {
                 let bar = ui.max_rect();
                 // El fondo arrastra la ventana; los botones se dibujan encima.
@@ -641,14 +666,12 @@ impl App {
             return (None, false);
         };
         let active = self.active == pos;
-        let mut label = note.title.clone();
-        if self.dirty.contains(&note.dir) {
-            label.push_str(" *");
-        }
+        let title = note.title.clone();
+        let dirty = self.dirty.contains(&note.dir);
         let show_close = active || prev_hover == Some(idx);
 
         let fill = if active {
-            ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+            ui.visuals().selection.bg_fill
         } else {
             egui::Color32::TRANSPARENT
         };
@@ -656,19 +679,20 @@ impl App {
 
         let response = egui::Frame::new()
             .fill(fill)
-            .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(8, 4))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::symmetric(10, 4))
             .show(ui, |ui| {
-                // 196 = 180 de texto + márgenes + el `×`.
-                ui.set_max_width(196.0);
+                // 200 = 180 de texto + márgenes + el `×`.
+                ui.set_max_width(200.0);
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    let mut text = egui::RichText::new(&label);
-                    if active {
-                        text = text.strong();
-                    }
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let color = if active {
+                        ui.visuals().text_color()
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
                     let name = ui.add(
-                        egui::Label::new(text)
+                        egui::Label::new(title_job(&title, color, 12.5, dirty))
                             .truncate()
                             .sense(egui::Sense::click()),
                     );
@@ -684,6 +708,20 @@ impl App {
             })
             .response;
 
+        if active && let Some(start) = self.saved_flash {
+            let elapsed = start.elapsed().as_millis() as u64;
+            if elapsed < style::SAVE_FLASH_MS {
+                let alpha = 1.0 - elapsed as f32 / style::SAVE_FLASH_MS as f32;
+                ui.painter().rect_filled(
+                    response.rect,
+                    6.0,
+                    style::ACCENT.gamma_multiply(0.3 * alpha),
+                );
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(16));
+            }
+        }
+
         (close, response.hovered())
     }
 
@@ -695,10 +733,14 @@ impl App {
         let mut hovered = self.hovered_row;
 
         egui::Panel::left("notas")
-            .exact_size(280.0)
+            .exact_size(style::SIDEBAR_WIDTH)
             .resizable(false)
+            .frame(
+                egui::Frame::NONE
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::symmetric(8, 8)),
+            )
             .show(ui, |ui| {
-                ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     let button_w = 26.0;
                     let search_w = (ui.available_width() - button_w - 6.0).max(60.0);
@@ -715,7 +757,7 @@ impl App {
                         self.new_note();
                     }
                 });
-                ui.separator();
+                ui.add_space(4.0);
 
                 let query = store::fold(&self.search);
                 let mut indices: Vec<usize> = (0..self.notes.len()).collect();
@@ -780,11 +822,6 @@ impl App {
                             }
 
                             let dirty = self.dirty.contains(&note.dir);
-                            let title = if dirty {
-                                format!("{} *", note.title)
-                            } else {
-                                note.title.clone()
-                            };
                             let snippet = snippet(&note.body);
                             let is_active = self.tabs.get(self.active).copied() == Some(idx);
                             let show_close = hovered == Some(idx);
@@ -795,20 +832,27 @@ impl App {
                                     egui::UiBuilder::new().sense(egui::Sense::click()),
                                     |ui| {
                                         ui.set_width(ui.available_width());
+                                        ui.set_min_height(44.0);
+                                        ui.add_space(4.0);
                                         egui::Sides::new().shrink_left().show(
                                             ui,
                                             |ui| {
                                                 ui.vertical(|ui| {
                                                     ui.spacing_mut().item_spacing.y = 2.0;
-                                                    let mut text =
-                                                        egui::RichText::new(&title).size(14.0);
-                                                    if is_active {
-                                                        text = text.strong();
-                                                    }
+                                                    let color = if is_active {
+                                                        ui.visuals().text_color()
+                                                    } else {
+                                                        ui.visuals().strong_text_color()
+                                                    };
                                                     ui.add(
-                                                        egui::Label::new(text)
-                                                            .truncate()
-                                                            .selectable(false),
+                                                        egui::Label::new(title_job(
+                                                            &note.title,
+                                                            color,
+                                                            13.5,
+                                                            dirty,
+                                                        ))
+                                                        .truncate()
+                                                        .selectable(false),
                                                     );
                                                     ui.add(
                                                         egui::Label::new(
@@ -858,14 +902,14 @@ impl App {
                             if row.hovered() {
                                 hovered = Some(idx);
                             }
-                            if show_close || is_active {
+                            if row.hovered() || is_active {
                                 let fill = if is_active {
-                                    ui.visuals().selection.bg_fill.gamma_multiply(0.35)
+                                    ui.visuals().selection.bg_fill
                                 } else {
                                     ui.visuals().widgets.hovered.weak_bg_fill
                                 };
                                 ui.painter()
-                                    .set(bg, egui::Shape::rect_filled(row.rect, 4.0, fill));
+                                    .set(bg, egui::Shape::rect_filled(row.rect, 6.0, fill));
                             }
                             if row.clicked() {
                                 open = Some(idx);
@@ -873,11 +917,14 @@ impl App {
                         }
 
                         if visibles == 0 {
-                            ui.weak(if self.notes.is_empty() {
-                                "Todavía no hay notas."
+                            ui.add_space(8.0);
+                            if self.notes.is_empty() {
+                                ui.weak("Todavía no hay notas.");
+                                ui.add_space(2.0);
+                                ui.weak(egui::RichText::new("Ctrl+N crea la primera").small());
                             } else {
-                                "Sin resultados."
-                            });
+                                ui.weak(format!("Sin resultados para «{}».", self.search.trim()));
+                            }
                         }
                     });
             });
@@ -903,26 +950,49 @@ impl App {
             ui.separator();
 
             if let Some(error) = self.error.clone() {
+                ui.add_space(6.0);
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
 
             let Some(idx) = self.active_note() else {
-                ui.centered_and_justified(|ui| {
-                    ui.weak("Ninguna nota abierta. Usá «+» o elegí una de la lista.");
-                });
+                ui.allocate_ui_with_layout(
+                    ui.available_size(),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(ui.available_height() * 0.38);
+                        ui.label(
+                            egui::RichText::new("Ninguna nota abierta")
+                                .size(15.0)
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("Elegí una nota de la lista o creá una con Ctrl+N")
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    },
+                );
                 return;
             };
 
-            let size = egui::vec2(ui.available_width(), ui.available_height());
-            let body = ui.add_sized(
-                size,
-                egui::TextEdit::multiline(&mut self.notes[idx].body)
-                    .hint_text("Escribí acá…")
-                    .code_editor(),
-            );
-            if body.changed() {
-                self.mark_dirty(idx);
-            }
+            let width = style::READING_WIDTH.min(ui.available_width());
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                ui.add_space(18.0);
+                let size = egui::vec2(width, ui.available_height() - 18.0);
+                let body = ui.add_sized(
+                    size,
+                    egui::TextEdit::multiline(&mut self.notes[idx].body)
+                        .hint_text("Escribí acá…")
+                        .font(egui::TextStyle::Name("editor".into()))
+                        .frame(egui::Frame::NONE)
+                        .margin(egui::Margin::same(0))
+                        .text_color(ui.visuals().text_color()),
+                );
+                if body.changed() {
+                    self.mark_dirty(idx);
+                }
+            });
         });
     }
 
@@ -996,6 +1066,7 @@ impl App {
         let ctx = ui.ctx().clone();
 
         if self.applied_theme != Some(self.theme) {
+            style::install(&ctx);
             ctx.set_theme(self.theme.preference());
             self.applied_theme = Some(self.theme);
         }
@@ -1018,6 +1089,7 @@ impl App {
         self.title_bar(ui);
         self.notes_panel(ui);
         self.editor_panel(ui);
+        self.paint_hairlines(ui);
         self.unsaved_modal(&ctx);
 
         // Asegura el frame siguiente, donde se manda el `Close` real.
@@ -1102,6 +1174,28 @@ fn open_folder(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Texto con el punto de «sin guardar» al final, truncable como un solo bloque.
+fn title_job(text: &str, color: egui::Color32, size: f32, dirty: bool) -> egui::text::LayoutJob {
+    let format = egui::TextFormat {
+        font_id: egui::FontId::proportional(size),
+        color,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(text, 0.0, format.clone());
+    if dirty {
+        job.append(
+            "  •",
+            0.0,
+            egui::TextFormat {
+                color: style::ACCENT,
+                ..format
+            },
+        );
+    }
+    job
+}
+
 /// Primeras dos líneas del cuerpo, con espacios colapsados, recortadas para la fila.
 fn snippet(body: &str) -> String {
     let text = body
@@ -1164,7 +1258,7 @@ fn icon_button(
 }
 
 fn paint_icon(painter: &egui::Painter, icon: Icon, rect: egui::Rect, color: egui::Color32) {
-    let stroke = egui::Stroke::new(1.4, color);
+    let stroke = egui::Stroke::new(1.5, color);
     let center = rect.center();
     let s = rect.width();
 
@@ -1327,6 +1421,10 @@ mod ui_tests {
         h.run();
 
         assert!(!h.state().is_dirty(0));
+        assert!(
+            h.state().saved_flash.is_some(),
+            "guardar debería disparar el destello"
+        );
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
             "uno\ndos"
@@ -1538,6 +1636,66 @@ mod ui_tests {
             "uno\n",
             "descartar no debe escribir en disco"
         );
+    }
+
+    #[test]
+    fn estado_vacio_sin_nota_abierta() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        assert!(h.query_by_label("Ninguna nota abierta").is_some());
+
+        h.get_by_label("nota-a").click();
+        h.run();
+
+        assert!(h.query_by_label("Ninguna nota abierta").is_none());
+    }
+
+    #[test]
+    fn estado_vacio_del_buscador() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+        h.run();
+        h.event(egui::Event::Text("zzz".to_owned()));
+        h.run();
+
+        assert!(h.query_by_label("Sin resultados para «zzz».").is_some());
+    }
+
+    #[test]
+    fn snapshot_tema_claro() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(
+            tmp.path(),
+            &[
+                ("comprar-cafe", "Leche\nPan\n"),
+                ("idea-app", "App de notas en Rust con egui.\n"),
+                ("reunion-lunes", "Lunes 10:00\nMetricas del sprint\n"),
+            ],
+        );
+        let app = App::load(tmp.path().to_path_buf());
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1000.0, 700.0))
+            .with_pixels_per_point(1.0)
+            .wgpu()
+            .build_ui_state(|ui, app: &mut App| app.root_ui(ui), app);
+        h.run();
+
+        h.get_by_label("comprar-cafe").click();
+        h.run();
+        h.get_by_label("Ajustes").click();
+        h.run();
+        h.get_by_label("Tema").click();
+        h.run();
+        h.get_by_label("Claro").click();
+        h.run();
+
+        let claro = h.render().expect("render wgpu");
+        claro.save("/tmp/opencode/kt-light.png").unwrap();
     }
 
     #[test]
