@@ -119,6 +119,35 @@ Con eso el icono aparece también al correr `cargo run`, porque la asociación e
 por `app_id` y no por el ejecutable. Si el dock sigue mostrando el genérico,
 cerrar sesión una vez: GNOME cachea las entradas al iniciar.
 
+### Versionado y releases
+
+SemVer con una sola fuente de verdad: `version` en `Cargo.toml`. El tag es `v`
+más esa misma versión.
+
+| Cambio | Bump | Tag |
+|---|---|---|
+| Fix compatible | patch (`0.1.0` → `0.1.1`) | `v0.1.1` |
+| Feature compatible | minor (`0.1.1` → `0.2.0`) | `v0.2.0` |
+| Breaking change | major (`0.2.0` → `1.0.0`) | `v1.0.0` |
+
+Antes de 1.0.0 un breaking change puede ir en el minor.
+
+Para publicar:
+
+```bash
+cargo set-version 0.2.0   # cargo-edit; o editar Cargo.toml y correr cargo build
+git commit -am "chore: release v0.2.0"
+git tag v0.2.0
+git push origin main --tags
+```
+
+`.github/workflows/release.yml` se dispara con el tag: falla si no coincide con
+`Cargo.toml`, corre los tests, construye el `.deb` con cargo-deb y crea el
+Release con las notas que genera GitHub y el `.deb` como asset. Si el job falla
+y lo reintentás, sube el artefacto al Release existente.
+
+`.github/workflows/ci.yml` corre los tests en cada push a `main` y en PRs.
+
 ## Licencia
 
 MIT (ver [`LICENSE`](LICENSE)). La tipografía Inter es de la SIL Open Font
