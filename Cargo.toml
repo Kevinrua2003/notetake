@@ -30,7 +30,7 @@ opt-level = 2
 [package.metadata.deb]
 section = "utils"
 priority = "optional"
-license-file = ["LICENSE", 0]
+license-file = "LICENSE"
 # $auto solo detecta enlaces reales; glutin/winit cargan GL/EGL/wayland por
 # dlopen, así que van explícitos.
 depends = "$auto, libgl1, libxkbcommon0, libwayland-client0"
