@@ -1,11 +1,13 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, SystemTime};
 
 use eframe::egui;
 
 use crate::store::{self, Note};
 use crate::style;
+use crate::update::{self, InstallKind};
 
 /// Clave usada en el storage de eframe.
 const STORAGE_KEY: &str = "notetake";
@@ -84,6 +86,48 @@ enum Choice {
     Cancel,
 }
 
+/// Chequeo de actualizaciones. El trabajo de red corre en un thread aparte y
+/// deja el resultado en el canal.
+enum UpdateState {
+    Idle,
+    Checking(Receiver<Result<Option<update::Release>, String>>),
+    UpToDate,
+    Available(update::Release),
+    Installing(Receiver<Result<String, String>>),
+    Installed(String),
+}
+
+/// Lo que el popup de ajustes necesita mostrar, sin arrastrar los canales.
+#[derive(Clone)]
+enum UpdateView {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(String),
+    Installing,
+    Installed(String),
+}
+
+impl UpdateState {
+    fn view(&self) -> UpdateView {
+        match self {
+            Self::Idle => UpdateView::Idle,
+            Self::Checking(_) => UpdateView::Checking,
+            Self::UpToDate => UpdateView::UpToDate,
+            Self::Available(release) => UpdateView::Available(release.tag.clone()),
+            Self::Installing(_) => UpdateView::Installing,
+            Self::Installed(tag) => UpdateView::Installed(tag.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum UpdateAction {
+    Check,
+    Install,
+    Restart,
+}
+
 pub struct App {
     data_dir: PathBuf,
     /// Orden de carga, nunca se reordena: los índices de `tabs` apuntan acá.
@@ -111,6 +155,11 @@ pub struct App {
     pending: Option<CloseTarget>,
     close_now: bool,
     was_focused: bool,
+    update: UpdateState,
+    /// Detectado una vez: `cargo run` no se puede reemplazar solo.
+    install_kind: InstallKind,
+    /// Hay que relanzar el binario nuevo cuando termine el cierre.
+    restart: bool,
 }
 
 impl App {
@@ -155,6 +204,9 @@ impl App {
             pending: None,
             close_now: false,
             was_focused: true,
+            update: UpdateState::Idle,
+            install_kind: update::install_kind(),
+            restart: false,
         }
     }
 
@@ -575,6 +627,9 @@ impl App {
         let mut order = self.order;
         let mut open_data = false;
         let mut open_trash = false;
+        let update_view = self.update.view();
+        let kind = self.install_kind;
+        let mut update_action = None;
 
         egui::Popup::menu(&response).show(|ui| {
             ui.set_min_width(190.0);
@@ -603,6 +658,42 @@ impl App {
                 open_trash = true;
                 ui.close();
             }
+            ui.separator();
+            match update_view {
+                UpdateView::Idle if kind == InstallKind::Unsupported => {
+                    ui.add_enabled(false, egui::Button::new("Buscar actualizaciones"))
+                        .on_disabled_hover_text("Build de desarrollo o ruta no reconocida");
+                }
+                UpdateView::Idle => {
+                    if ui.button("Buscar actualizaciones").clicked() {
+                        update_action = Some(UpdateAction::Check);
+                        ui.close();
+                    }
+                }
+                UpdateView::Checking => {
+                    ui.add_enabled(false, egui::Button::new("Buscando…"));
+                }
+                UpdateView::UpToDate => {
+                    let version = format!("Última versión (v{})", update::CURRENT);
+                    ui.add_enabled(false, egui::Button::new(version));
+                }
+                UpdateView::Available(tag) => {
+                    if ui.button(format!("Instalar {tag}")).clicked() {
+                        update_action = Some(UpdateAction::Install);
+                        ui.close();
+                    }
+                }
+                UpdateView::Installing => {
+                    ui.add_enabled(false, egui::Button::new("Descargando…"));
+                }
+                UpdateView::Installed(tag) => {
+                    ui.weak(format!("Actualizado a {tag}"));
+                    if ui.button("Reiniciar ahora").clicked() {
+                        update_action = Some(UpdateAction::Restart);
+                        ui.close();
+                    }
+                }
+            }
         });
 
         self.theme = theme;
@@ -618,11 +709,120 @@ impl App {
                 Err(err) => self.error = Some(format!("No se pudo crear la papelera: {err}")),
             }
         }
+        match update_action {
+            Some(UpdateAction::Check) => self.start_check(ui.ctx()),
+            Some(UpdateAction::Install) => self.start_install(ui.ctx()),
+            Some(UpdateAction::Restart) => self.request_restart(ui.ctx()),
+            None => {}
+        }
     }
 
     fn open_dir(&mut self, path: &Path) {
         if let Err(err) = open_folder(path) {
             self.error = Some(format!("No se pudo abrir «{}»: {err}", path.display()));
+        }
+    }
+
+    /// Recoge el resultado del thread de red y repinta mientras espera.
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        let state = std::mem::replace(&mut self.update, UpdateState::Idle);
+        self.update = match state {
+            UpdateState::Checking(rx) => match rx.try_recv() {
+                Ok(Ok(Some(release))) => UpdateState::Available(release),
+                Ok(Ok(None)) => UpdateState::UpToDate,
+                Ok(Err(err)) => {
+                    self.error = Some(err);
+                    UpdateState::Idle
+                }
+                Err(TryRecvError::Empty) => UpdateState::Checking(rx),
+                Err(TryRecvError::Disconnected) => {
+                    self.error = Some("El chequeo de actualizaciones se cortó.".into());
+                    UpdateState::Idle
+                }
+            },
+            UpdateState::Installing(rx) => match rx.try_recv() {
+                Ok(Ok(tag)) => UpdateState::Installed(tag),
+                Ok(Err(err)) => {
+                    self.error = Some(err);
+                    UpdateState::Idle
+                }
+                Err(TryRecvError::Empty) => UpdateState::Installing(rx),
+                Err(TryRecvError::Disconnected) => {
+                    self.error = Some("La instalación se cortó.".into());
+                    UpdateState::Idle
+                }
+            },
+            other => other,
+        };
+
+        if matches!(
+            self.update,
+            UpdateState::Checking(_) | UpdateState::Installing(_)
+        ) {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn start_check(&mut self, ctx: &egui::Context) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(update::check());
+            ctx.request_repaint();
+        });
+        self.error = None;
+        self.update = UpdateState::Checking(rx);
+    }
+
+    fn start_install(&mut self, ctx: &egui::Context) {
+        let UpdateState::Available(release) = &self.update else {
+            return;
+        };
+        let (tag, url, kind) = (
+            release.tag.clone(),
+            release.deb_url.clone(),
+            self.install_kind,
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(update::install(&url, kind).map(|()| tag));
+            ctx.request_repaint();
+        });
+        self.error = None;
+        self.update = UpdateState::Installing(rx);
+    }
+
+    /// Reinicia con el binario nuevo; si hay cambios sin guardar, primero pasa
+    /// por el modal de cierre.
+    fn request_restart(&mut self, ctx: &egui::Context) {
+        self.restart = true;
+        if let Some(idx) = self.next_dirty_tab() {
+            self.pending = Some(CloseTarget::Window(idx));
+        } else {
+            self.relaunch();
+            ctx.request_repaint();
+        }
+    }
+
+    /// Abre el binario nuevo y deja que eframe cierre y guarde esta instancia.
+    fn relaunch(&mut self) {
+        self.restart = false;
+        let launched = std::env::current_exe()
+            .map_err(|err| err.to_string())
+            .and_then(|exe| {
+                // La espera deja que eframe guarde app.ron antes de abrir la nueva
+                // instancia; sin ella las dos leen y escriben el mismo estado.
+                let script = format!("sleep 0.5; exec '{}'", exe.display());
+                std::process::Command::new("sh")
+                    .args(["-c", &script])
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+            });
+        match launched {
+            Ok(()) => self.close_now = true,
+            Err(err) => self.error = Some(format!("No se pudo reiniciar: {err}")),
         }
     }
 
@@ -1108,6 +1308,7 @@ impl App {
             Some(Choice::Cancel) => {
                 self.pending = None;
                 self.close_now = false;
+                self.restart = false;
             }
             None => self.pending = Some(target),
         }
@@ -1133,10 +1334,15 @@ impl App {
 
         self.rescan_on_focus(&ctx);
         self.handle_close_request(&ctx);
+        self.poll_update(&ctx);
 
         if self.close_now {
             self.close_now = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            if self.restart {
+                self.relaunch();
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
 
         self.handle_shortcuts(&ctx);
@@ -1576,6 +1782,25 @@ mod ui_tests {
         assert!(
             h.get_by_label("nota-b").rect().top() < h.get_by_label("nota-a").rect().top(),
             "la más reciente va arriba"
+        );
+    }
+
+    #[test]
+    fn ajustes_no_deja_actualizar_desde_un_build_de_desarrollo() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("Ajustes").click();
+        h.run();
+
+        // Los tests corren desde `target/`: no hay binario instalado que reemplazar.
+        assert_eq!(h.state().install_kind, InstallKind::Unsupported);
+        h.get_by_label("Buscar actualizaciones").click();
+        h.run();
+        assert!(
+            matches!(h.state().update, UpdateState::Idle),
+            "el ítem deshabilitado no debe arrancar el chequeo"
         );
     }
 

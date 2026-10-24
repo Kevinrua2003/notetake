@@ -19,6 +19,8 @@ eframe = { version = "0.37", default-features = false, features = [
 ] }
 serde = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+ureq = "3.5.0"
+serde_json = "1.0.154"
 
 [dev-dependencies]
 tempfile = "3"

@@ -75,7 +75,7 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 12 de storage + 14 de UI + 1 de contraste
+cargo test            # 12 de storage + 16 de UI + 3 de actualizaciones + 1 de contraste
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
@@ -88,6 +88,7 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 - `src/app.rs` — estado y UI egui: barra de título propia, ajustes (tema, orden
   y carpetas), lista, búsqueda, tabs, renombre inline, modal y rescan al
   recuperar foco.
+- `src/update.rs` — chequeo e instalación desde GitHub Releases (solo Linux).
 - `src/main.rs` — arranque, resolución del data dir, ventana e icono.
 - `assets/icon.png` — icono de la app (512 px, esquinas redondeadas).
 - `assets/notetake.desktop` — entrada de escritorio para el icono del dock.
@@ -148,6 +149,23 @@ y lo reintentás, sube el artefacto al Release existente.
 
 `.github/workflows/ci.yml` corre los tests en cada push a `main` y en PRs.
 
+### Actualizaciones desde la app
+
+El último ítem de los ajustes es «Buscar actualizaciones». Consulta
+`releases/latest` en GitHub y compara el tag con `version` de `Cargo.toml`; si
+ya está al día, lo dice. Si hay una release nueva, el ítem pasa a «Instalar
+vX.Y.Z»: descarga el `.deb`, lo aplica y ofrece «Reiniciar ahora» (con el modal
+de cambios sin guardar de por medio).
+
+- Instalado como `.deb` (`/usr/bin/notetake`): `pkexec apt-get install` y el
+  diálogo de contraseña del sistema.
+- Instalado con `cargo install --root ~/.local`: extrae el binario del `.deb`
+  con `dpkg-deb` y reemplaza `~/.local/bin/notetake`.
+- Corriendo con `cargo run`: el ítem queda deshabilitado.
+
+El chequeo es manual: nada de red al arrancar. Si una instalación falla, el
+`.deb` queda en el temporal para instalarlo a mano.
+
 ## Licencia
 
 MIT (ver [`LICENSE`](LICENSE)). La tipografía Inter es de la SIL Open Font
@@ -164,3 +182,6 @@ License, ver `assets/Inter-OFL.txt`.
 - Tema y orden se guardan en el `app.ron` de eframe; si matás el proceso a mano
   justo después de cambiarlos, se pierde la preferencia (la UI igual la aplica
   en esa sesión).
+- Las actualizaciones confían en HTTPS: no se verifica checksum del `.deb`.
+- Actualizar un `.deb` depende de `pkexec` y `apt-get`; un `cargo install` en
+  `~/.local`, de `dpkg-deb`.

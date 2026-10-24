@@ -1,6 +1,7 @@
 mod app;
 mod store;
 mod style;
+mod update;
 
 fn main() -> eframe::Result {
     let dir = store::data_dir();
