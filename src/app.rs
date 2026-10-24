@@ -1771,7 +1771,9 @@ mod ui_tests {
         h.run();
 
         let claro = h.render().expect("render wgpu");
-        claro.save("/tmp/opencode/kt-light.png").unwrap();
+        claro
+            .save(std::env::temp_dir().join("kt-light.png"))
+            .unwrap();
     }
 
     #[test]
@@ -1799,13 +1801,17 @@ mod ui_tests {
         h.event(egui::Event::Text("texto sucio".to_owned()));
         h.run();
         let limpio = h.render().expect("render wgpu");
-        limpio.save("/tmp/opencode/kt-dirty.png").unwrap();
+        limpio
+            .save(std::env::temp_dir().join("kt-dirty.png"))
+            .unwrap();
 
         let primero = h.get_all_by_label("Renombrar").next().unwrap();
         primero.click();
         h.run();
         let editando = h.render().expect("render wgpu");
-        editando.save("/tmp/opencode/kt-rename.png").unwrap();
+        editando
+            .save(std::env::temp_dir().join("kt-rename.png"))
+            .unwrap();
         h.key_press(egui::Key::Escape);
         h.run();
 
@@ -1814,13 +1820,15 @@ mod ui_tests {
         h.get_by_label("Tema").click();
         h.run();
         let menu = h.render().expect("render wgpu");
-        menu.save("/tmp/opencode/kt-menu.png").unwrap();
+        menu.save(std::env::temp_dir().join("kt-menu.png")).unwrap();
         h.key_press(egui::Key::Escape);
         h.run();
 
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
         h.run();
         let modal = h.render().expect("render wgpu");
-        modal.save("/tmp/opencode/kt-modal.png").unwrap();
+        modal
+            .save(std::env::temp_dir().join("kt-modal.png"))
+            .unwrap();
     }
 }
