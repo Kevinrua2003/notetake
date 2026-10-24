@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=notetake
+Name=Notetake
 Comment=Notas de escritorio, una carpeta por nota
 Exec=notetake
 StartupWMClass=notetake

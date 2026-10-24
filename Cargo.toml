@@ -3,6 +3,7 @@ name = "notetake"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
+description = "App de notas de escritorio, personal y minimalista"
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = [
@@ -22,3 +23,24 @@ egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
 [profile.release]
 opt-level = 2
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+# $auto solo detecta enlaces reales; glutin/winit cargan GL/EGL/wayland por
+# dlopen, así que van explícitos.
+depends = "$auto, libgl1, libxkbcommon0, libwayland-client0"
+assets = [
+    # target/release es la ruta que cargo-deb espera y reemplaza por la real.
+    ["target/release/notetake", "usr/bin/", "755"],
+
+    # El archivo .desktop va a la ruta global de aplicaciones
+    ["assets/notetake.desktop", "usr/share/applications/", "644"],
+
+    # El nombre debe ser igual al de Icon= y el dir el tamaño real (512 px)
+    ["assets/icon.png", "usr/share/icons/hicolor/512x512/apps/notetake.png", "644"],
+
+    # Con assets explícitos se pierde el $auto de documentación
+    ["README.md", "usr/share/doc/notetake/README.md", "644"],
+    ["assets/Inter-OFL.txt", "usr/share/doc/notetake/Inter-OFL.txt", "644"],
+]
