@@ -3,6 +3,9 @@ name = "notetake"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
+authors = ["Kevin Rua"]
+license = "MIT"
+repository = "https://github.com/Kevinrua2003/notetake"
 description = "App de notas de escritorio, personal y minimalista"
 
 [dependencies]
@@ -27,6 +30,7 @@ opt-level = 2
 [package.metadata.deb]
 section = "utils"
 priority = "optional"
+license-file = ["LICENSE", 0]
 # $auto solo detecta enlaces reales; glutin/winit cargan GL/EGL/wayland por
 # dlopen, así que van explícitos.
 depends = "$auto, libgl1, libxkbcommon0, libwayland-client0"
@@ -42,5 +46,6 @@ assets = [
 
     # Con assets explícitos se pierde el $auto de documentación
     ["README.md", "usr/share/doc/notetake/README.md", "644"],
+    ["LICENSE", "usr/share/doc/notetake/LICENSE", "644"],
     ["assets/Inter-OFL.txt", "usr/share/doc/notetake/Inter-OFL.txt", "644"],
 ]

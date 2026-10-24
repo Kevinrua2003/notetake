@@ -119,6 +119,11 @@ Con eso el icono aparece también al correr `cargo run`, porque la asociación e
 por `app_id` y no por el ejecutable. Si el dock sigue mostrando el genérico,
 cerrar sesión una vez: GNOME cachea las entradas al iniciar.
 
+## Licencia
+
+MIT (ver [`LICENSE`](LICENSE)). La tipografía Inter es de la SIL Open Font
+License, ver `assets/Inter-OFL.txt`.
+
 ## Límites conocidos
 
 - Guardado solo con `Ctrl+S`: si el proceso muere, se pierde el texto sin guardar.
