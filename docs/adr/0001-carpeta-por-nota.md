@@ -7,16 +7,21 @@ por archivos (Dropbox, Nextcloud), borrarse sin perderlas y editarse a mano.
 
 ## Decisión
 
-Cada nota es `<data>/<slug>/note.md`. El título es el nombre de la carpeta, ya
-pasado por `slugify`; el cuerpo es el contenido de `note.md`. Borrar mueve la
-carpeta a `_trash/`.
+Cada nota es `<data>/<cuaderno>/<nota>/note.md`. El título es el nombre de la
+carpeta de la nota, ya pasado por `slugify`; el cuerpo es el contenido de
+`note.md`. Cada cuaderno es una carpeta directa del data dir y existe por su
+marcador `.notebook` o por tener al menos una nota. Borrar mueve la carpeta de la
+nota a `_trash/`; borrar un cuaderno mueve la carpeta completa.
 
 ## Consecuencias
 
 - Renombrar mueve la carpeta: los enlaces externos a esa ruta se rompen.
-- El listado es un `readdir`; no hay índice ni caché que mantener.
+- Los títulos son únicos por cuaderno, no por data dir.
+- Renombrar o borrar un cuaderno mueve todas sus notas con él.
+- El listado es un `readdir` por cuaderno; no hay índice ni caché que mantener.
 - Los adjuntos futuros viven dentro de la carpeta de la nota, con rutas relativas.
-- Los nombres `_*` y `.*` quedan reservados (papelera, temporales).
+- Los nombres `_*` y `.*` quedan reservados (papelera, temporales, marcador).
+- Las notas sueltas en la raíz no se leen: cada nota necesita un cuaderno.
 
 ## Alternativas rechazadas
 

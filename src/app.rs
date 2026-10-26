@@ -21,6 +21,8 @@ struct Persisted {
     #[serde(default)]
     active: Option<String>,
     #[serde(default)]
+    notebook: Option<String>,
+    #[serde(default)]
     theme: Theme,
     #[serde(default)]
     order: Order,
@@ -60,6 +62,28 @@ enum Choice {
     Save,
     Discard,
     Cancel,
+}
+
+/// Eliminación pendiente de confirmación.
+#[derive(Clone)]
+enum Confirm {
+    Note(NoteId),
+    Notebook(String),
+}
+
+#[derive(Clone, Copy)]
+enum ConfirmAction {
+    Cancel,
+    TrashNote,
+    SaveAndTrashNote,
+    TrashNotebook,
+}
+
+/// Alta o renombre de cuaderno pendiente de nombre.
+#[derive(Clone)]
+enum Prompt {
+    CreateNotebook,
+    RenameNotebook(String),
 }
 
 /// Chequeo de actualizaciones. El trabajo de red corre en un thread aparte y
@@ -110,6 +134,8 @@ enum UpdateAction {
 pub struct App {
     workspace: Workspace,
     search: String,
+    /// Cuaderno visible en el sidebar; independiente de la nota abierta.
+    notebook: Option<String>,
     error: Option<String>,
     hovered_row: Option<NoteId>,
     hovered_tab: Option<NoteId>,
@@ -117,6 +143,13 @@ pub struct App {
     /// Texto del renombre inline; el id en edición vive en el workspace.
     rename_text: String,
     rename_focus: bool,
+    /// Eliminación esperando confirmación.
+    confirm: Option<Confirm>,
+    /// Cuaderno esperando nombre.
+    prompt: Option<Prompt>,
+    prompt_text: String,
+    prompt_focus: bool,
+    prompt_error: Option<String>,
     theme: Theme,
     order: Order,
     /// Último tema aplicado al contexto, para no tocar las opciones cada frame.
@@ -153,8 +186,11 @@ impl App {
     }
 
     fn load(data_dir: PathBuf) -> Self {
+        let workspace = Workspace::load(data_dir);
+        let notebook = workspace.notebooks().first().cloned();
         Self {
-            workspace: Workspace::load(data_dir),
+            workspace,
+            notebook,
             search: String::new(),
             error: None,
             hovered_row: None,
@@ -162,6 +198,11 @@ impl App {
             focus_search: false,
             rename_text: String::new(),
             rename_focus: false,
+            confirm: None,
+            prompt: None,
+            prompt_text: String::new(),
+            prompt_focus: false,
+            prompt_error: None,
             theme: Theme::default(),
             order: Order::default(),
             applied_theme: None,
@@ -178,7 +219,22 @@ impl App {
     fn restore(&mut self, persisted: Persisted) {
         self.theme = persisted.theme;
         self.order = persisted.order;
+        self.notebook = persisted
+            .notebook
+            .filter(|name| self.workspace.notebooks().contains(name))
+            .or_else(|| self.workspace.notebooks().first().cloned());
         self.workspace.restore(persisted.tabs, persisted.active);
+    }
+
+    /// Si el cuaderno elegido desapareció del disco, cae al primero.
+    fn sync_notebook(&mut self) {
+        if self
+            .notebook
+            .as_ref()
+            .is_none_or(|name| !self.workspace.notebooks().contains(name))
+        {
+            self.notebook = self.workspace.notebooks().first().cloned();
+        }
     }
 
     fn request_close_tab(&mut self, id: NoteId) {
@@ -191,7 +247,11 @@ impl App {
 
     fn new_note(&mut self) {
         self.commit_rename();
-        match self.workspace.create() {
+        let Some(notebook) = self.notebook.clone() else {
+            self.error = Some("Creá un cuaderno antes de crear una nota.".into());
+            return;
+        };
+        match self.workspace.create(&notebook) {
             Ok(id) => {
                 self.workspace.open(id);
                 self.start_rename(id);
@@ -246,10 +306,38 @@ impl App {
         }
     }
 
-    fn trash_note(&mut self, id: NoteId) {
-        if let Err(err) = self.workspace.trash(id) {
-            self.error = Some(format!("No se pudo mover a la papelera: {err}"));
+    fn trash_note(&mut self, id: NoteId) -> bool {
+        match self.workspace.trash(id) {
+            Ok(()) => true,
+            Err(err) => {
+                self.error = Some(format!("No se pudo mover a la papelera: {err}"));
+                false
+            }
         }
+    }
+
+    fn request_delete_note(&mut self, id: NoteId) {
+        self.error = None;
+        self.confirm = Some(Confirm::Note(id));
+    }
+
+    fn request_delete_notebook(&mut self, notebook: String) {
+        self.error = None;
+        self.confirm = Some(Confirm::Notebook(notebook));
+    }
+
+    fn request_create_notebook(&mut self) {
+        self.prompt = Some(Prompt::CreateNotebook);
+        self.prompt_text.clear();
+        self.prompt_focus = true;
+        self.prompt_error = None;
+    }
+
+    fn request_rename_notebook(&mut self, notebook: String) {
+        self.prompt_text = notebook.clone();
+        self.prompt = Some(Prompt::RenameNotebook(notebook));
+        self.prompt_focus = true;
+        self.prompt_error = None;
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -315,6 +403,7 @@ impl App {
         let focused = ctx.input(|input| input.viewport().focused).unwrap_or(false);
         if focused && !self.was_focused {
             self.workspace.reconcile();
+            self.sync_notebook();
         }
         self.was_focused = focused;
     }
@@ -630,6 +719,7 @@ impl App {
         };
         let active = self.workspace.active() == Some(id);
         let title = note.title.clone();
+        let notebook = note.notebook.clone();
         let dirty = self.workspace.is_dirty(id);
         let show_close = active || prev_hover == Some(id);
 
@@ -656,16 +746,18 @@ impl App {
                     } else {
                         ui.visuals().weak_text_color()
                     };
-                    let name = ui.add(
-                        egui::Label::new(title_job(
-                            &title,
-                            color,
-                            12.5,
-                            dirty.then(|| style::accent(ui.visuals())),
-                        ))
-                        .truncate()
-                        .sense(egui::Sense::click()),
-                    );
+                    let name = ui
+                        .add(
+                            egui::Label::new(title_job(
+                                &title,
+                                color,
+                                12.5,
+                                dirty.then(|| style::accent(ui.visuals())),
+                            ))
+                            .truncate()
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text(format!("{notebook}/{title}"));
                     if name.clicked() {
                         self.workspace.open(id);
                     }
@@ -699,6 +791,11 @@ impl App {
         let mut open = None;
         let mut delete = None;
         let mut pencil = None;
+        let mut move_to = None;
+        let mut select = None;
+        let mut create_notebook = false;
+        let mut rename_notebook = None;
+        let mut delete_notebook = None;
         let mut commit = false;
         let mut hovered = self.hovered_row;
 
@@ -711,6 +808,42 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(8, 8)),
             )
             .show(ui, |ui| {
+                let current = self.notebook.clone();
+                let mut chosen = current.clone();
+                egui::ComboBox::new("cuaderno", "Cuaderno")
+                    .selected_text(current.as_deref().unwrap_or("Sin cuaderno"))
+                    .width((ui.available_width() - 78.0).max(120.0))
+                    .show_ui(ui, |ui| {
+                        for name in self.workspace.notebooks() {
+                            if ui
+                                .selectable_label(chosen.as_deref() == Some(name.as_str()), name)
+                                .clicked()
+                            {
+                                chosen = Some(name.clone());
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Nuevo cuaderno…").clicked() {
+                            create_notebook = true;
+                            ui.close();
+                        }
+                        if let Some(name) = current.clone() {
+                            if ui.button("Renombrar cuaderno…").clicked() {
+                                rename_notebook = Some(name.clone());
+                                ui.close();
+                            }
+                            if ui.button("Eliminar cuaderno…").clicked() {
+                                delete_notebook = Some(name.clone());
+                                ui.close();
+                            }
+                        }
+                    });
+                if chosen != current {
+                    select = Some(chosen);
+                }
+                ui.add_space(4.0);
+
                 ui.horizontal(|ui| {
                     let button_w = 26.0;
                     let search_w = (ui.available_width() - button_w - 6.0).max(60.0);
@@ -729,7 +862,11 @@ impl App {
                 });
                 ui.add_space(4.0);
 
-                let ids = self.workspace.visible(self.order, &self.search);
+                let notebook = self.notebook.clone();
+                let ids = notebook
+                    .as_deref()
+                    .map(|name| self.workspace.visible(self.order, &self.search, name))
+                    .unwrap_or_default();
 
                 // La regla de la nota activa vive en el margen, no sobre el texto.
                 let rail_x = ui.max_rect().left() - 5.0;
@@ -782,6 +919,7 @@ impl App {
                             let snippet = snippet(&note.body);
                             let is_active = self.workspace.active() == Some(id);
                             let show_close = hovered == Some(id);
+                            let note_notebook = note.notebook.clone();
 
                             let bg = ui.painter().add(egui::Shape::Noop);
                             let row = ui
@@ -889,6 +1027,17 @@ impl App {
                                     pencil = Some(id);
                                     ui.close();
                                 }
+                                if self.workspace.notebooks().len() > 1 {
+                                    ui.menu_button("Mover a cuaderno", |ui| {
+                                        for other in self.workspace.notebooks() {
+                                            if other != &note_notebook && ui.button(other).clicked()
+                                            {
+                                                move_to = Some((id, other.clone()));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
                                 if ui.button("Mover a papelera").clicked() {
                                     delete = Some(id);
                                     ui.close();
@@ -898,23 +1047,56 @@ impl App {
 
                         if visibles == 0 {
                             ui.add_space(8.0);
-                            if self.workspace.is_empty() {
-                                ui.weak("Todavía no hay notas.");
-                                ui.add_space(2.0);
-                                ui.weak(egui::RichText::new("Ctrl+N crea la primera").small());
-                            } else {
-                                ui.weak(format!("Sin resultados para «{}».", self.search.trim()));
+                            match notebook.as_deref() {
+                                None => {
+                                    ui.weak("Todavía no hay cuadernos.");
+                                    ui.add_space(2.0);
+                                    if ui.button("Crear cuaderno").clicked() {
+                                        create_notebook = true;
+                                    }
+                                }
+                                Some(name)
+                                    if self.workspace.notebook_len(name) == 0
+                                        && self.search.is_empty() =>
+                                {
+                                    ui.weak("Todavía no hay notas.");
+                                    ui.add_space(2.0);
+                                    ui.weak(egui::RichText::new("Ctrl+N crea la primera").small());
+                                }
+                                Some(_) => {
+                                    ui.weak(format!(
+                                        "Sin resultados para «{}».",
+                                        self.search.trim()
+                                    ));
+                                }
                             }
                         }
                     });
             });
 
         self.hovered_row = hovered;
+        if let Some(notebook) = select {
+            self.notebook = notebook;
+        }
         if let Some(id) = open {
             self.workspace.open(id);
         }
         if let Some(id) = delete {
-            self.trash_note(id);
+            self.request_delete_note(id);
+        }
+        if let Some((id, notebook)) = move_to
+            && let Err(err) = self.workspace.move_note(id, &notebook)
+        {
+            self.error = Some(format!("No se pudo mover la nota: {err}"));
+        }
+        if let Some(notebook) = rename_notebook {
+            self.request_rename_notebook(notebook);
+        }
+        if let Some(notebook) = delete_notebook {
+            self.request_delete_notebook(notebook);
+        }
+        if create_notebook {
+            self.request_create_notebook();
         }
         if let Some(id) = pencil {
             self.commit_rename();
@@ -1018,6 +1200,232 @@ impl App {
                     });
                 });
         });
+    }
+
+    fn delete_modal(&mut self, ctx: &egui::Context) {
+        let Some(confirm) = self.confirm.clone() else {
+            return;
+        };
+        let mut action = None;
+        let error = self.error.clone();
+
+        let response = egui::Modal::new(egui::Id::unique("confirmar-eliminar")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            match &confirm {
+                Confirm::Note(id) => {
+                    let Some(note) = self.workspace.note(*id) else {
+                        action = Some(ConfirmAction::Cancel);
+                        return;
+                    };
+                    let dirty = self.workspace.is_dirty(*id);
+                    ui.heading("Mover a la papelera");
+                    if dirty {
+                        ui.label(format!(
+                            "«{}» tiene cambios sin guardar. Se moverá a la papelera.",
+                            note.title
+                        ));
+                    } else {
+                        ui.label(format!("«{}» se moverá a la papelera.", note.title));
+                    }
+                    if let Some(error) = error {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if dirty {
+                            if accent_button(ui, "Guardar y mover").clicked() {
+                                action = Some(ConfirmAction::SaveAndTrashNote);
+                            }
+                            if ui.button("Descartar y mover").clicked() {
+                                action = Some(ConfirmAction::TrashNote);
+                            }
+                        } else if ui.button("Mover a la papelera").clicked() {
+                            action = Some(ConfirmAction::TrashNote);
+                        }
+                        if ui.button("Cancelar").clicked() {
+                            action = Some(ConfirmAction::Cancel);
+                        }
+                    });
+                }
+                Confirm::Notebook(name) => {
+                    let count = self.workspace.notebook_len(name);
+                    let dirty = self
+                        .workspace
+                        .visible(Order::Alphabetical, "", name)
+                        .into_iter()
+                        .filter(|&id| self.workspace.is_dirty(id))
+                        .count();
+                    ui.heading("Eliminar cuaderno");
+                    ui.label(match count {
+                        0 => format!(
+                            "Se moverá el cuaderno «{name}» a la papelera. No tiene notas."
+                        ),
+                        1 => format!(
+                            "Se moverá el cuaderno «{name}» a la papelera con su única nota. Se elimina esa nota."
+                        ),
+                        n => format!(
+                            "Se moverá el cuaderno «{name}» a la papelera con sus {n} notas. Se eliminan todas sus notas."
+                        ),
+                    });
+                    if dirty > 0 {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            format!(
+                                "Hay {dirty} nota(s) con cambios sin guardar: se pierden."
+                            ),
+                        );
+                    }
+                    if let Some(error) = error {
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Mover todo a la papelera").clicked() {
+                            action = Some(ConfirmAction::TrashNotebook);
+                        }
+                        if ui.button("Cancelar").clicked() {
+                            action = Some(ConfirmAction::Cancel);
+                        }
+                    });
+                }
+            }
+        });
+
+        if action.is_none() && response.should_close() {
+            action = Some(ConfirmAction::Cancel);
+        }
+
+        match action {
+            Some(ConfirmAction::Cancel) => self.confirm = None,
+            Some(ConfirmAction::SaveAndTrashNote) => {
+                let Confirm::Note(id) = confirm else {
+                    self.confirm = None;
+                    return;
+                };
+                match self.save_note(id) {
+                    Ok(()) => {
+                        self.error = None;
+                        if self.trash_note(id) {
+                            self.confirm = None;
+                        }
+                    }
+                    Err(err) => self.error = Some(format!("No se pudo guardar: {err}")),
+                }
+            }
+            Some(ConfirmAction::TrashNote) => {
+                let Confirm::Note(id) = confirm else {
+                    self.confirm = None;
+                    return;
+                };
+                self.error = None;
+                if self.trash_note(id) {
+                    self.confirm = None;
+                }
+            }
+            Some(ConfirmAction::TrashNotebook) => {
+                let Confirm::Notebook(name) = confirm else {
+                    self.confirm = None;
+                    return;
+                };
+                match self.workspace.trash_notebook(&name) {
+                    Ok(()) => {
+                        self.error = None;
+                        self.confirm = None;
+                        self.sync_notebook();
+                    }
+                    Err(err) => self.error = Some(format!("No se pudo mover el cuaderno: {err}")),
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn notebook_prompt(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.prompt.clone() else {
+            return;
+        };
+        let mut cancel = false;
+        let mut submit = false;
+        let error = self.prompt_error.clone();
+        let creating = matches!(prompt, Prompt::CreateNotebook);
+
+        let response = egui::Modal::new(egui::Id::unique("cuaderno-nombre")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            ui.heading(if creating {
+                "Nuevo cuaderno"
+            } else {
+                "Renombrar cuaderno"
+            });
+            ui.label("Nombre del cuaderno:");
+            let text = ui.add(
+                egui::TextEdit::singleline(&mut self.prompt_text)
+                    .hint_text("por ejemplo, personal")
+                    .desired_width(f32::INFINITY),
+            );
+            if self.prompt_focus {
+                text.request_focus();
+                if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), text.id) {
+                    let end = egui::text::CCursor::new(self.prompt_text.chars().count());
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text_selection::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            end,
+                        )));
+                    state.store(ui.ctx(), text.id);
+                }
+                self.prompt_focus = false;
+            }
+            if let Some(error) = error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if accent_button(ui, if creating { "Crear" } else { "Guardar" }).clicked() {
+                    submit = true;
+                }
+                if ui.button("Cancelar").clicked() {
+                    cancel = true;
+                }
+            });
+            submit = submit || ui.input(|input| input.key_pressed(egui::Key::Enter));
+        });
+
+        if cancel || (response.should_close() && !submit) {
+            self.prompt = None;
+            self.prompt_error = None;
+            return;
+        }
+        if !submit {
+            return;
+        }
+
+        let title = self.prompt_text.trim();
+        if title.is_empty() {
+            self.prompt_error = Some("El nombre no puede estar vacío.".into());
+            return;
+        }
+        let result = match &prompt {
+            Prompt::CreateNotebook => self.workspace.create_notebook(title),
+            Prompt::RenameNotebook(current) => self.workspace.rename_notebook(current, title),
+        };
+        let renamed_from = match &prompt {
+            Prompt::RenameNotebook(current) => Some(current.clone()),
+            Prompt::CreateNotebook => None,
+        };
+        match result {
+            Ok(name) => {
+                if creating || renamed_from.as_deref() == self.notebook.as_deref() {
+                    self.notebook = Some(name);
+                }
+                self.prompt = None;
+                self.prompt_error = None;
+                self.error = None;
+            }
+            Err(err) => {
+                self.prompt_error = Some(format!("No se pudo guardar el cuaderno: {err}"));
+            }
+        }
     }
 
     fn unsaved_modal(&mut self, ctx: &egui::Context) {
@@ -1196,6 +1604,8 @@ impl App {
         self.notes_panel(ui);
         self.editor_panel(ui);
         self.paint_hairlines(ui);
+        self.delete_modal(&ctx);
+        self.notebook_prompt(&ctx);
         self.unsaved_modal(&ctx);
         self.update_modal(&ctx);
 
@@ -1246,6 +1656,7 @@ impl eframe::App for App {
         let persisted = Persisted {
             tabs,
             active,
+            notebook: self.notebook.clone(),
             theme: self.theme,
             order: self.order,
         };
@@ -1366,8 +1777,15 @@ mod ui_tests {
     use egui_kittest::kittest::Queryable;
 
     fn seed(dir: &std::path::Path, notes: &[(&str, &str)]) {
+        seed_in(dir, "general", notes);
+    }
+
+    fn seed_in(dir: &std::path::Path, notebook: &str, notes: &[(&str, &str)]) {
+        let notebook_dir = dir.join(notebook);
+        std::fs::create_dir_all(&notebook_dir).unwrap();
+        std::fs::write(notebook_dir.join(".notebook"), "").unwrap();
         for (name, body) in notes {
-            let path = dir.join(name);
+            let path = notebook_dir.join(name);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("note.md"), body).unwrap();
         }
@@ -1384,7 +1802,7 @@ mod ui_tests {
 
     /// Id de la única nota del seed: los tests trabajan de a una.
     fn only_id(app: &App) -> NoteId {
-        let ids = app.workspace.visible(Order::Alphabetical, "");
+        let ids = app.workspace.visible(Order::Alphabetical, "", "general");
         assert_eq!(ids.len(), 1, "el test espera una sola nota");
         ids[0]
     }
@@ -1396,7 +1814,7 @@ mod ui_tests {
     /// Títulos visibles en orden alfabético.
     fn titles(app: &App) -> Vec<String> {
         app.workspace
-            .visible(Order::Alphabetical, "")
+            .visible(Order::Alphabetical, "", "general")
             .into_iter()
             .filter_map(|id| app.workspace.note(id))
             .map(|note| note.title.clone())
@@ -1516,7 +1934,7 @@ mod ui_tests {
             "escribir debería marcar la nota sucia"
         );
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("general/nota-a/note.md")).unwrap(),
             "uno\n",
             "no debería guardarse antes de Ctrl+S"
         );
@@ -1530,7 +1948,7 @@ mod ui_tests {
             "guardar debería disparar el destello"
         );
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("general/nota-a/note.md")).unwrap(),
             "uno\ndos"
         );
     }
@@ -1550,9 +1968,9 @@ mod ui_tests {
         h.key_press(egui::Key::Enter);
         h.run();
 
-        assert!(tmp.path().join("comprar-pan/note.md").is_file());
+        assert!(tmp.path().join("general/comprar-pan/note.md").is_file());
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("comprar-pan/note.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("general/comprar-pan/note.md")).unwrap(),
             "cuerpo\n",
             "renombrar no debe reescribir el cuerpo"
         );
@@ -1670,7 +2088,7 @@ mod ui_tests {
         h.key_press(egui::Key::Escape);
         h.run();
 
-        assert!(tmp.path().join("nota-a").is_dir());
+        assert!(tmp.path().join("general/nota-a").is_dir());
         assert!(!tmp.path().join("otro").exists());
         assert_eq!(titles(h.state()), ["nota-a"]);
     }
@@ -1702,7 +2120,7 @@ mod ui_tests {
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
         h.run();
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("nueva/note.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("general/nueva/note.md")).unwrap(),
             "uno\ndos"
         );
     }
@@ -1710,7 +2128,7 @@ mod ui_tests {
     #[test]
     fn nueva_nota_arranca_renombre() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path()).unwrap();
+        seed(tmp.path(), &[]);
         let mut h = harness(tmp.path());
 
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
@@ -1723,8 +2141,8 @@ mod ui_tests {
         h.key_press(egui::Key::Enter);
         h.run();
 
-        assert!(tmp.path().join("mi-nota/note.md").is_file());
-        assert!(!tmp.path().join("sin-titulo").exists());
+        assert!(tmp.path().join("general/mi-nota/note.md").is_file());
+        assert!(!tmp.path().join("general/sin-titulo").exists());
     }
 
     #[test]
@@ -1746,10 +2164,10 @@ mod ui_tests {
 
         assert_eq!(h.state().search, "cafe");
         // Ambos matchean: uno por título, otro por cuerpo.
-        let visibles = h
-            .state()
-            .workspace
-            .visible(Order::Alphabetical, &h.state().search);
+        let visibles =
+            h.state()
+                .workspace
+                .visible(Order::Alphabetical, &h.state().search, "general");
         assert_eq!(visibles.len(), 2);
 
         h.key_press(egui::Key::Escape);
@@ -1784,7 +2202,7 @@ mod ui_tests {
             "el tab debería cerrarse"
         );
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("general/nota-a/note.md")).unwrap(),
             "uno\n",
             "descartar no debe escribir en disco"
         );
@@ -1812,7 +2230,7 @@ mod ui_tests {
             "guardar debería cerrar el tab"
         );
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("general/nota-a/note.md")).unwrap(),
             "uno\ndos"
         );
     }
@@ -1954,6 +2372,211 @@ mod ui_tests {
             1,
             "el menú debería abrir la nota"
         );
+    }
+
+    #[test]
+    fn selector_filtra_las_notas_por_cuaderno() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        seed_in(tmp.path(), "trabajo", &[("nota-b", "dos\n")]);
+        let mut h = harness(tmp.path());
+
+        assert!(h.query_by_label("nota-a").is_some());
+        assert!(h.query_by_label("nota-b").is_none());
+
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("trabajo").click();
+        h.run();
+
+        assert!(h.query_by_label("nota-a").is_none());
+        assert!(h.query_by_label("nota-b").is_some());
+    }
+
+    #[test]
+    fn cambiar_de_cuaderno_no_cierra_la_tab_activa() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        seed_in(tmp.path(), "trabajo", &[("nota-b", "dos\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click();
+        h.run();
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("trabajo").click();
+        h.run();
+
+        let ws = &h.state().workspace;
+        assert_eq!(ws.tabs().len(), 1, "la tab abierta sigue viva");
+        assert_eq!(
+            ws.note(ws.active().unwrap()).unwrap().title,
+            "nota-a",
+            "la activa sigue siendo la nota del otro cuaderno"
+        );
+    }
+
+    #[test]
+    fn crear_cuaderno_desde_el_estado_vacio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut h = harness(tmp.path());
+
+        assert!(h.query_by_label("Todavía no hay cuadernos.").is_some());
+        assert!(h.state().notebook.is_none());
+        assert!(!tmp.path().join("general").exists());
+        h.get_by_label("Crear cuaderno").click();
+        h.run();
+        h.event(egui::Event::Text("Personal".to_owned()));
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Crear")
+            .click();
+        h.run();
+
+        assert!(tmp.path().join("personal/.notebook").is_file());
+        assert_eq!(h.state().notebook.as_deref(), Some("personal"));
+
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+        h.run();
+        assert_eq!(
+            h.state()
+                .workspace
+                .visible(Order::Alphabetical, "", "personal")
+                .len(),
+            1,
+            "Ctrl+N debería crear la nota en el cuaderno elegido"
+        );
+    }
+
+    #[test]
+    fn mover_nota_entre_cuadernos_desde_el_menu() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        seed_in(tmp.path(), "trabajo", &[("nota-b", "dos\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click_secondary();
+        h.run();
+        h.get_by_label("Mover a cuaderno").click();
+        h.run();
+        h.get_by_label("trabajo").click();
+        h.run();
+
+        assert!(
+            h.state()
+                .workspace
+                .visible(Order::Alphabetical, "", "general")
+                .is_empty()
+        );
+        let titulos: Vec<String> = h
+            .state()
+            .workspace
+            .visible(Order::Alphabetical, "", "trabajo")
+            .into_iter()
+            .filter_map(|id| h.state().workspace.note(id))
+            .map(|note| note.title.clone())
+            .collect();
+        assert_eq!(titulos, ["nota-a", "nota-b"]);
+    }
+
+    #[test]
+    fn borrar_nota_pide_confirmacion() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click_secondary();
+        h.run();
+        h.get_by_label("Mover a papelera").click();
+        h.run();
+        assert!(
+            h.query_by_label_contains("se moverá a la papelera")
+                .is_some(),
+            "el modal debería pedir confirmación"
+        );
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancelar")
+            .click();
+        h.run();
+        assert!(tmp.path().join("general/nota-a").is_dir());
+
+        h.get_by_label("nota-a").click_secondary();
+        h.run();
+        h.get_by_label("Mover a papelera").click();
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Mover a la papelera")
+            .click();
+        h.run();
+
+        assert!(!tmp.path().join("general/nota-a").exists());
+        assert!(tmp.path().join("_trash/nota-a").is_dir());
+    }
+
+    #[test]
+    fn borrar_nota_sucia_permite_guardar_antes() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click();
+        h.run();
+        click(&mut h, Pos2::new(600.0, 300.0));
+        h.event(egui::Event::Text("dos".to_owned()));
+        h.run();
+
+        let row = h
+            .get_all_by_label_contains("nota-a")
+            .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .unwrap();
+        row.click_secondary();
+        h.run();
+        h.get_by_label("Mover a papelera").click();
+        h.run();
+        assert!(
+            h.query_by_label_contains("tiene cambios sin guardar")
+                .is_some(),
+            "el modal debería avisar del cuerpo sin guardar"
+        );
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Guardar y mover")
+            .click();
+        h.run();
+
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("_trash/nota-a/note.md")).unwrap(),
+            "uno\ndos"
+        );
+        assert!(h.state().workspace.tabs().is_empty());
+    }
+
+    #[test]
+    fn borrar_cuaderno_avisa_que_elimina_todas_sus_notas() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n"), ("nota-b", "dos\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("Eliminar cuaderno…").click();
+        h.run();
+        assert!(
+            h.query_by_label_contains("Se eliminan todas sus notas")
+                .is_some(),
+            "el modal debería avisar que se eliminan todas las notas"
+        );
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancelar")
+            .click();
+        h.run();
+        assert!(tmp.path().join("general/nota-a").is_dir());
+
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        h.get_by_label("Eliminar cuaderno…").click();
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Mover todo a la papelera")
+            .click();
+        h.run();
+
+        assert!(!tmp.path().join("general").exists());
+        assert!(tmp.path().join("_trash/general/nota-a").is_dir());
+        assert!(h.state().notebook.is_none());
     }
 
     #[test]

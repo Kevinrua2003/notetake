@@ -10,16 +10,20 @@ nota.
 ## Decisión
 
 Cada nota recibe un `NoteId(u64)` opaco al cargar o crear, y no se reindexa nunca.
-`workspace` es el único módulo que lo conoce y lo usa. La sesión (tabs abiertas y
-activa) se persiste por título en `app.ron`, porque el id no sobrevive al proceso.
+`workspace` es el único módulo que lo conoce y lo usa. La sesión (tabs abiertas,
+activa y cuaderno elegido) se persiste en `app.ron`; las tabs usan
+`cuaderno/título` porque el id no sobrevive al proceso y el título solo no
+alcanza cuando dos cuadernos tienen una nota con el mismo nombre.
 
 ## Consecuencias
 
 - Borrar o renombrar otra nota no toca los ids: el renombre y el sucio siguen
   apuntando a la nota correcta.
-- `restore` ignora títulos que ya no existen.
+- `restore` ignora referencias sin cuaderno y títulos que ya no existen.
+- Renombrar o mover una nota o un cuaderno cambia su referencia de sesión, pero no
+  su `NoteId` durante el proceso.
 - El título sigue siendo la identidad en disco; el id solo ordena la sesión.
-- `app.ron` no cambió de formato.
+- `app.ron` suma el campo `notebook`; un `app.ron` viejo arranca sin tabs.
 
 ## Alternativas rechazadas
 

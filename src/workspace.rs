@@ -46,6 +46,8 @@ struct Entry {
 
 pub struct Workspace {
     data_dir: PathBuf,
+    /// Cuadernos en disco, ordenados por título plegado.
+    notebooks: Vec<String>,
     /// Orden de carga, nunca se reordena: el id no depende de la posición.
     entries: Vec<Entry>,
     tabs: Vec<NoteId>,
@@ -61,6 +63,7 @@ pub struct Workspace {
 impl Workspace {
     pub fn load(data_dir: PathBuf) -> Self {
         let mut workspace = Self {
+            notebooks: store::discover_notebooks(&data_dir),
             data_dir,
             entries: Vec::new(),
             tabs: Vec::new(),
@@ -80,31 +83,31 @@ impl Workspace {
         &self.data_dir
     }
 
+    pub fn notebooks(&self) -> &[String] {
+        &self.notebooks
+    }
+
     pub fn tabs(&self) -> &[NoteId] {
         &self.tabs
     }
 
-    /// Títulos de las tabs y de la activa, para persistir la sesión.
+    /// Identidad de las tabs y de la activa, para persistir la sesión.
     pub fn session(&self) -> (Vec<String>, Option<String>) {
         let tabs = self
             .tabs
             .iter()
             .filter_map(|&id| self.note(id))
-            .map(|note| note.title.clone())
+            .map(|note| format!("{}/{}", note.notebook, note.title))
             .collect();
         let active = self
             .active()
             .and_then(|id| self.note(id))
-            .map(|note| note.title.clone());
+            .map(|note| format!("{}/{}", note.notebook, note.title));
         (tabs, active)
     }
 
     pub fn active(&self) -> Option<NoteId> {
         self.tabs.get(self.active).copied()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 
     pub fn note(&self, id: NoteId) -> Option<&Note> {
@@ -166,12 +169,13 @@ impl Workspace {
         }
     }
 
-    /// Ids en el orden pedido, filtrados por título y cuerpo.
-    pub fn visible(&self, order: Order, query: &str) -> Vec<NoteId> {
+    /// Ids de un cuaderno en el orden pedido, filtrados por título y cuerpo.
+    pub fn visible(&self, order: Order, query: &str, notebook: &str) -> Vec<NoteId> {
         let query = store::fold(query);
         let mut ids: Vec<NoteId> = self
             .entries
             .iter()
+            .filter(|entry| entry.note.notebook == notebook)
             .filter(|entry| {
                 query.is_empty()
                     || store::fold(&entry.note.title).contains(&query)
@@ -188,6 +192,14 @@ impl Workspace {
             }),
         }
         ids
+    }
+
+    /// Cantidad de notas de un cuaderno.
+    pub fn notebook_len(&self, notebook: &str) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.note.notebook == notebook)
+            .count()
     }
 
     pub fn start_rename(&mut self, id: NoteId) {
@@ -215,7 +227,7 @@ impl Workspace {
         let dir = entry.note.dir.clone();
         // Renombrar no guarda: el cuerpo en memoria puede tener cambios sueltos.
         let body = entry.note.body.clone();
-        let mut note = store::rename(&self.data_dir, &dir, title)?;
+        let mut note = store::rename(&dir, title)?;
         note.body = body;
         if let Some(entry) = self.entry_mut(id) {
             entry.note = note;
@@ -223,24 +235,75 @@ impl Workspace {
         Ok(())
     }
 
-    /// Crea `sin-titulo` (o `sin-titulo-N`) y devuelve su id, sin abrirla.
-    pub fn create(&mut self) -> io::Result<NoteId> {
-        let note = store::create(&self.data_dir)?;
+    /// Crea `sin-titulo` (o `sin-titulo-N`) en el cuaderno, sin abrirla.
+    pub fn create(&mut self, notebook: &str) -> io::Result<NoteId> {
+        let note = store::create(&self.data_dir, notebook)?;
         let id = self.new_id();
         self.entries.push(Entry { id, note });
         Ok(id)
+    }
+
+    pub fn create_notebook(&mut self, title: &str) -> io::Result<String> {
+        let notebook = store::create_notebook(&self.data_dir, title)?;
+        self.notebooks.push(notebook.clone());
+        self.notebooks.sort_by_key(|name| store::fold(name));
+        Ok(notebook)
+    }
+
+    /// Renombra el cuaderno y actualiza en memoria las notas que contiene.
+    pub fn rename_notebook(&mut self, current: &str, title: &str) -> io::Result<String> {
+        let renamed = store::rename_notebook(&self.data_dir, current, title)?;
+        for entry in &mut self.entries {
+            if entry.note.notebook == current {
+                entry.note.notebook = renamed.clone();
+                entry.note.dir = self.data_dir.join(&renamed).join(&entry.note.title);
+            }
+        }
+        if let Some(name) = self.notebooks.iter_mut().find(|name| *name == current) {
+            *name = renamed.clone();
+        }
+        self.notebooks.sort_by_key(|name| store::fold(name));
+        Ok(renamed)
+    }
+
+    pub fn trash_notebook(&mut self, notebook: &str) -> io::Result<()> {
+        store::trash_notebook(&self.data_dir, notebook)?;
+        let ids: Vec<NoteId> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.note.notebook == notebook)
+            .map(|entry| entry.id)
+            .collect();
+        for id in ids {
+            self.remove(id);
+        }
+        self.notebooks.retain(|name| name != notebook);
+        Ok(())
+    }
+
+    /// Mueve una nota a otro cuaderno sin perder el cuerpo sin guardar ni el id.
+    pub fn move_note(&mut self, id: NoteId, notebook: &str) -> io::Result<()> {
+        let Some(entry) = self.entry(id) else {
+            return Ok(());
+        };
+        if entry.note.notebook == notebook {
+            return Ok(());
+        }
+        let body = entry.note.body.clone();
+        let dir = entry.note.dir.clone();
+        let mut note = store::move_note(&self.data_dir, &dir, notebook)?;
+        note.body = body;
+        if let Some(entry) = self.entry_mut(id) {
+            entry.note = note;
+        }
+        Ok(())
     }
 
     pub fn save(&mut self, id: NoteId) -> io::Result<()> {
         let Some(entry) = self.entry(id) else {
             return Ok(());
         };
-        let note = store::save(
-            &self.data_dir,
-            &entry.note.dir,
-            &entry.note.title,
-            &entry.note.body,
-        )?;
+        let note = store::save(&entry.note.dir, &entry.note.title, &entry.note.body)?;
         if let Some(entry) = self.entry_mut(id) {
             entry.note = note;
         }
@@ -261,6 +324,7 @@ impl Workspace {
     /// Las notas sucias tienen prioridad: no se tocan.
     pub fn reconcile(&mut self) {
         let disk = store::discover(&self.data_dir);
+        self.notebooks = store::discover_notebooks(&self.data_dir);
         let mut gone = Vec::new();
         for entry in &mut self.entries {
             if self.dirty.contains(&entry.id) {
@@ -286,7 +350,7 @@ impl Workspace {
         }
     }
 
-    /// Reabre las tabs de la sesión anterior, por título.
+    /// Reabre las tabs de la sesión anterior, por `cuaderno/título`.
     pub fn restore(&mut self, tabs: Vec<String>, active: Option<String>) {
         for title in tabs {
             if let Some(id) = self.id_of(&title)
@@ -314,10 +378,11 @@ impl Workspace {
         self.entries.retain(|entry| entry.id != id);
     }
 
-    fn id_of(&self, title: &str) -> Option<NoteId> {
+    fn id_of(&self, reference: &str) -> Option<NoteId> {
+        let (notebook, title) = reference.split_once('/')?;
         self.entries
             .iter()
-            .find(|entry| entry.note.title == title)
+            .find(|entry| entry.note.notebook == notebook && entry.note.title == title)
             .map(|entry| entry.id)
     }
 
@@ -358,8 +423,11 @@ mod tests {
     }
 
     fn seed(dir: &Path, notes: &[(&str, &str)]) {
+        let notebook = dir.join("general");
+        std::fs::create_dir_all(&notebook).unwrap();
+        std::fs::write(notebook.join(".notebook"), "").unwrap();
         for (name, body) in notes {
-            let path = dir.join(name);
+            let path = notebook.join(name);
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("note.md"), body).unwrap();
         }
@@ -371,7 +439,7 @@ mod tests {
     }
 
     fn titles(ws: &Workspace, order: Order, query: &str) -> Vec<String> {
-        ws.visible(order, query)
+        ws.visible(order, query, "general")
             .into_iter()
             .filter_map(|id| ws.note(id))
             .map(|note| note.title.clone())
@@ -383,7 +451,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
 
-        let id = ws.create().unwrap();
+        let id = ws.create("general").unwrap();
         ws.open(id);
         ws.edit(id, |note| {
             note.body = "cuerpo".into();
@@ -397,7 +465,7 @@ mod tests {
         assert!(ws.editing().is_none());
         assert_eq!(ws.note(id).unwrap().title, "comprar-pan");
         assert_eq!(ws.note(id).unwrap().body, "cuerpo");
-        assert!(tmp.path().join("comprar-pan/note.md").is_file());
+        assert!(tmp.path().join("general/comprar-pan/note.md").is_file());
     }
 
     #[test]
@@ -405,8 +473,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
 
-        let primera = ws.create().unwrap();
-        let segunda = ws.create().unwrap();
+        let primera = ws.create("general").unwrap();
+        let segunda = ws.create("general").unwrap();
         ws.start_rename(segunda);
         ws.trash(primera).unwrap();
 
@@ -421,7 +489,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
 
-        let id = ws.create().unwrap();
+        let id = ws.create("general").unwrap();
         ws.start_rename(id);
         ws.trash(id).unwrap();
 
@@ -433,9 +501,9 @@ mod tests {
     fn cerrar_tab_ajusta_el_activo() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
-        let a = ws.create().unwrap();
-        let b = ws.create().unwrap();
-        let c = ws.create().unwrap();
+        let a = ws.create("general").unwrap();
+        let b = ws.create("general").unwrap();
+        let c = ws.create("general").unwrap();
         for id in [a, b, c] {
             ws.open(id);
         }
@@ -453,7 +521,7 @@ mod tests {
     fn trash_quita_tab_sucio_y_entrada() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
-        let id = ws.create().unwrap();
+        let id = ws.create("general").unwrap();
         ws.open(id);
         marcar(&mut ws, id);
 
@@ -469,7 +537,7 @@ mod tests {
     fn save_actualiza_titulo_mtime_y_limpia_el_sucio() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
-        let id = ws.create().unwrap();
+        let id = ws.create("general").unwrap();
         ws.edit(id, |note| {
             note.body = "hola".into();
             true
@@ -489,16 +557,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(tmp.path(), &[("uno", "original"), ("dos", "original")]);
         let mut ws = workspace(tmp.path());
-        let ids = ws.visible(Order::Alphabetical, "");
+        let ids = ws.visible(Order::Alphabetical, "", "general");
         assert_eq!(ids.len(), 2);
         marcar(&mut ws, ids[0]);
 
-        std::fs::write(tmp.path().join("uno/note.md"), "cambiado").unwrap();
-        std::fs::write(tmp.path().join("dos/note.md"), "cambiado").unwrap();
+        std::fs::write(tmp.path().join("general/uno/note.md"), "cambiado").unwrap();
+        std::fs::write(tmp.path().join("general/dos/note.md"), "cambiado").unwrap();
         seed(tmp.path(), &[("tres", "nueva")]);
         ws.reconcile();
 
-        assert_eq!(ws.visible(Order::Alphabetical, "").len(), 3);
+        assert_eq!(ws.visible(Order::Alphabetical, "", "general").len(), 3);
         assert_eq!(
             ws.note(ids[0]).unwrap().body,
             "original",
@@ -516,8 +584,8 @@ mod tests {
     fn reconcile_saca_tabs_y_edicion_de_lo_borrado() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
-        let a = ws.create().unwrap();
-        let b = ws.create().unwrap();
+        let a = ws.create("general").unwrap();
+        let b = ws.create("general").unwrap();
         ws.open(a);
         ws.open(b);
         ws.start_rename(b);
@@ -564,8 +632,8 @@ mod tests {
     fn dirty_tab_respeta_el_orden_de_los_tabs() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
-        let a = ws.create().unwrap();
-        let b = ws.create().unwrap();
+        let a = ws.create("general").unwrap();
+        let b = ws.create("general").unwrap();
         ws.open(a);
         ws.open(b);
         marcar(&mut ws, b);
@@ -577,29 +645,135 @@ mod tests {
     }
 
     #[test]
-    fn restore_abre_tabs_por_titulo_e_ignora_desconocidas() {
+    fn restore_abre_tabs_por_cuaderno_y_titulo_e_ignora_desconocidas() {
         let tmp = tempfile::tempdir().unwrap();
         seed(tmp.path(), &[("uno", ""), ("dos", "")]);
         let mut ws = workspace(tmp.path());
 
         ws.restore(
-            vec!["dos".into(), "fantasma".into(), "uno".into()],
-            Some("uno".into()),
+            vec![
+                "general/dos".into(),
+                "general/fantasma".into(),
+                "general/uno".into(),
+            ],
+            Some("general/uno".into()),
         );
 
         assert_eq!(ws.tabs().len(), 2, "la desconocida se ignora");
         assert_eq!(ws.note(ws.tabs()[0]).unwrap().title, "dos");
-        assert_eq!(ws.active(), Some(ws.tabs()[1]), "el activo va por título");
+        assert_eq!(
+            ws.active(),
+            Some(ws.tabs()[1]),
+            "el activo va por cuaderno/título"
+        );
         assert_eq!(ws.note(ws.tabs()[1]).unwrap().title, "uno");
     }
 
     #[test]
-    fn session_devuelve_los_titulos_de_las_tabs() {
+    fn restore_ignora_referencias_sin_cuaderno() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("uno", "")]);
+        let mut ws = workspace(tmp.path());
+
+        ws.restore(vec!["uno".into()], Some("uno".into()));
+
+        assert!(
+            ws.tabs().is_empty(),
+            "las tabs viejas sin cuaderno no se restauran"
+        );
+        assert_eq!(ws.active(), None);
+    }
+
+    #[test]
+    fn visible_filtra_por_cuaderno() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = workspace(tmp.path());
+        ws.create_notebook("general").unwrap();
+        ws.create_notebook("trabajo").unwrap();
+        let general = ws.create("general").unwrap();
+        let trabajo = ws.create("trabajo").unwrap();
+
+        assert_eq!(
+            ws.visible(Order::Alphabetical, "", "general"),
+            vec![general]
+        );
+        assert_eq!(
+            ws.visible(Order::Alphabetical, "", "trabajo"),
+            vec![trabajo]
+        );
+        assert_eq!(ws.notebook_len("general"), 1);
+        assert_eq!(ws.notebook_len("trabajo"), 1);
+    }
+
+    #[test]
+    fn mover_nota_conserva_id_y_cuerpo_sucio() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = workspace(tmp.path());
+        ws.create_notebook("general").unwrap();
+        ws.create_notebook("trabajo").unwrap();
+        let id = ws.create("general").unwrap();
+        ws.edit(id, |note| {
+            note.body = "sin guardar".into();
+            true
+        });
+
+        ws.move_note(id, "trabajo").unwrap();
+
+        let note = ws.note(id).unwrap();
+        assert_eq!(note.notebook, "trabajo");
+        assert_eq!(note.body, "sin guardar");
+        assert_eq!(note.dir.parent().unwrap(), tmp.path().join("trabajo"));
+        assert!(ws.is_dirty(id));
+        assert!(ws.visible(Order::Alphabetical, "", "general").is_empty());
+    }
+
+    #[test]
+    fn renombrar_cuaderno_conserva_ids_y_tabs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = workspace(tmp.path());
+        ws.create_notebook("general").unwrap();
+        let id = ws.create("general").unwrap();
+        ws.open(id);
+
+        let renamed = ws.rename_notebook("general", "Personal").unwrap();
+
+        assert_eq!(renamed, "personal");
+        assert_eq!(ws.notebooks(), ["personal"]);
+        assert_eq!(ws.tabs(), &[id]);
+        let note = ws.note(id).unwrap();
+        assert_eq!(note.notebook, "personal");
+        assert_eq!(note.dir, tmp.path().join("personal/sin-titulo"));
+        assert!(note.dir.join("note.md").is_file());
+    }
+
+    #[test]
+    fn trash_cuaderno_quita_sus_tabs_y_edicion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ws = workspace(tmp.path());
+        ws.create_notebook("general").unwrap();
+        let a = ws.create("general").unwrap();
+        let b = ws.create("general").unwrap();
+        ws.open(a);
+        ws.open(b);
+        ws.start_rename(b);
+
+        ws.trash_notebook("general").unwrap();
+
+        assert!(ws.notebooks().is_empty());
+        assert!(ws.tabs().is_empty());
+        assert!(ws.editing().is_none());
+        assert!(ws.note(a).is_none());
+        assert!(ws.note(b).is_none());
+        assert!(tmp.path().join("_trash/general").is_dir());
+    }
+
+    #[test]
+    fn session_devuelve_las_tabs_con_cuaderno() {
         let tmp = tempfile::tempdir().unwrap();
         seed(tmp.path(), &[("uno", ""), ("dos", "")]);
         let mut ws = workspace(tmp.path());
 
-        let ids = ws.visible(Order::Alphabetical, "");
+        let ids = ws.visible(Order::Alphabetical, "", "general");
         let uno = ids
             .iter()
             .copied()
@@ -616,8 +790,8 @@ mod tests {
         assert_eq!(
             ws.session(),
             (
-                vec!["uno".to_owned(), "dos".to_owned()],
-                Some("dos".to_owned())
+                vec!["general/uno".to_owned(), "general/dos".to_owned()],
+                Some("general/dos".to_owned())
             )
         );
     }
@@ -626,7 +800,7 @@ mod tests {
     fn edit_marca_sucio_solo_si_cambio() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ws = workspace(tmp.path());
-        let id = ws.create().unwrap();
+        let id = ws.create("general").unwrap();
 
         assert!(!ws.edit(id, |note| {
             note.body = "igual".into();
