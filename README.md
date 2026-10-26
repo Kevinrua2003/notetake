@@ -79,7 +79,7 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 12 de storage + 18 de UI + 3 de actualizaciones + 1 de contraste
+cargo test            # 12 de storage + 19 de UI + 4 de actualizaciones + 1 de contraste
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
@@ -160,11 +160,13 @@ por eso el build y la publicación viven en la misma corrida.
 
 ### Actualizaciones desde la app
 
-El último ítem de los ajustes es «Buscar actualizaciones». Consulta
-`releases/latest` en GitHub y compara el tag con `version` de `Cargo.toml`; si
-ya está al día, lo dice. Si hay una release nueva, el ítem pasa a «Instalar
-vX.Y.Z»: descarga el `.deb`, lo aplica y ofrece «Reiniciar ahora» (con el modal
-de cambios sin guardar de por medio).
+El último ítem de los ajustes es «Buscar actualizaciones». Abre un modal que
+consulta `releases/latest` en GitHub y compara el tag con `version` de
+`Cargo.toml`, mostrando un spinner mientras busca. Si ya está al día, lo dice.
+Si hay una release nueva, el mismo modal ofrece «Actualizar»: descarga el
+`.deb`, lo aplica (spinner durante la instalación) y después ofrece «Reiniciar
+ahora» (con el modal de cambios sin guardar de por medio). Mientras busca o
+instala, el modal no se puede cerrar.
 
 - Instalado como `.deb` (`/usr/bin/notetake`): `pkexec apt-get install` y el
   diálogo de contraseña del sistema.
@@ -173,7 +175,8 @@ de cambios sin guardar de por medio).
 - Corriendo con `cargo run`: el ítem queda deshabilitado.
 
 El chequeo es manual: nada de red al arrancar. Si una instalación falla, el
-`.deb` queda en el temporal para instalarlo a mano.
+`.deb` queda en el temporal para instalarlo a mano y el error se muestra dentro
+del modal, con «Reintentar».
 
 ## Licencia
 

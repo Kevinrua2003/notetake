@@ -48,9 +48,26 @@ struct Asset {
 
 pub fn install_kind() -> InstallKind {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    std::env::current_exe().map_or(InstallKind::Unsupported, |exe| {
+    exe_path().map_or(InstallKind::Unsupported, |exe| {
         kind_for(&exe, home.as_deref())
     })
+}
+
+/// Ruta del binario en ejecución. Después de instalar, el `.deb` ya reemplazó el
+/// archivo, así que `/proc/self/exe` la reporta con « (deleted)» al final: esa
+/// ruta sigue siendo la del binario nuevo.
+pub fn exe_path() -> std::io::Result<PathBuf> {
+    Ok(clean_deleted(std::env::current_exe()?))
+}
+
+fn clean_deleted(exe: PathBuf) -> PathBuf {
+    match exe
+        .to_str()
+        .and_then(|path| path.strip_suffix(" (deleted)"))
+    {
+        Some(path) => PathBuf::from(path),
+        None => exe,
+    }
 }
 
 fn kind_for(exe: &Path, home: Option<&Path>) -> InstallKind {
@@ -168,8 +185,7 @@ fn install_deb(deb: &Path) -> Result<(), String> {
 }
 
 fn install_local(deb: &Path) -> Result<(), String> {
-    let exe =
-        std::env::current_exe().map_err(|err| format!("No se pudo ubicar el ejecutable: {err}"))?;
+    let exe = exe_path().map_err(|err| format!("No se pudo ubicar el ejecutable: {err}"))?;
     let extracted = std::env::temp_dir().join("notetake-update");
     let _ = std::fs::remove_dir_all(&extracted);
 
@@ -232,6 +248,20 @@ mod tests {
         assert_eq!(is_newer("v0.1.0", "0.1.0"), Ok(false));
         assert_eq!(is_newer("v0.1.9", "0.1.10"), Ok(false));
         assert!(is_newer("v0.2.0-rc1", "0.1.0").is_err());
+    }
+
+    #[test]
+    fn limpia_la_marca_de_archivo_borrado() {
+        let exe = PathBuf::from("/usr/bin/notetake");
+        assert_eq!(
+            clean_deleted(PathBuf::from("/usr/bin/notetake (deleted)")),
+            exe
+        );
+        assert_eq!(clean_deleted(exe.clone()), exe);
+        assert_eq!(
+            clean_deleted(PathBuf::from("/home/kevin/.local/bin/notetake (deleted)")),
+            PathBuf::from("/home/kevin/.local/bin/notetake")
+        );
     }
 
     #[test]

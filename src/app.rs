@@ -95,9 +95,10 @@ enum UpdateState {
     Available(update::Release),
     Installing(Receiver<Result<String, String>>),
     Installed(String),
+    Failed(String),
 }
 
-/// Lo que el popup de ajustes necesita mostrar, sin arrastrar los canales.
+/// Lo que el modal necesita mostrar, sin arrastrar los canales.
 #[derive(Clone)]
 enum UpdateView {
     Idle,
@@ -106,6 +107,7 @@ enum UpdateView {
     Available(String),
     Installing,
     Installed(String),
+    Failed(String),
 }
 
 impl UpdateState {
@@ -117,6 +119,7 @@ impl UpdateState {
             Self::Available(release) => UpdateView::Available(release.tag.clone()),
             Self::Installing(_) => UpdateView::Installing,
             Self::Installed(tag) => UpdateView::Installed(tag.clone()),
+            Self::Failed(err) => UpdateView::Failed(err.clone()),
         }
     }
 }
@@ -156,6 +159,8 @@ pub struct App {
     close_now: bool,
     was_focused: bool,
     update: UpdateState,
+    /// El modal de actualizaciones está abierto.
+    update_modal: bool,
     /// Detectado una vez: `cargo run` no se puede reemplazar solo.
     install_kind: InstallKind,
     /// Hay que relanzar el binario nuevo cuando termine el cierre.
@@ -205,6 +210,7 @@ impl App {
             close_now: false,
             was_focused: true,
             update: UpdateState::Idle,
+            update_modal: false,
             install_kind: update::install_kind(),
             restart: false,
         }
@@ -627,9 +633,8 @@ impl App {
         let mut order = self.order;
         let mut open_data = false;
         let mut open_trash = false;
-        let update_view = self.update.view();
         let kind = self.install_kind;
-        let mut update_action = None;
+        let mut check = false;
 
         egui::Popup::menu(&response).show(|ui| {
             ui.set_min_width(190.0);
@@ -659,37 +664,14 @@ impl App {
                 ui.close();
             }
             ui.separator();
-            match update_view {
-                UpdateView::Idle if kind == InstallKind::Unsupported => {
+            match kind {
+                InstallKind::Unsupported => {
                     ui.add_enabled(false, egui::Button::new("Buscar actualizaciones"))
                         .on_disabled_hover_text("Build de desarrollo o ruta no reconocida");
                 }
-                UpdateView::Idle => {
+                _ => {
                     if ui.button("Buscar actualizaciones").clicked() {
-                        update_action = Some(UpdateAction::Check);
-                        ui.close();
-                    }
-                }
-                UpdateView::Checking => {
-                    ui.add_enabled(false, egui::Button::new("Buscando…"));
-                }
-                UpdateView::UpToDate => {
-                    let version = format!("Última versión (v{})", update::CURRENT);
-                    ui.add_enabled(false, egui::Button::new(version));
-                }
-                UpdateView::Available(tag) => {
-                    if ui.button(format!("Instalar {tag}")).clicked() {
-                        update_action = Some(UpdateAction::Install);
-                        ui.close();
-                    }
-                }
-                UpdateView::Installing => {
-                    ui.add_enabled(false, egui::Button::new("Descargando…"));
-                }
-                UpdateView::Installed(tag) => {
-                    ui.weak(format!("Actualizado a {tag}"));
-                    if ui.button("Reiniciar ahora").clicked() {
-                        update_action = Some(UpdateAction::Restart);
+                        check = true;
                         ui.close();
                     }
                 }
@@ -709,11 +691,9 @@ impl App {
                 Err(err) => self.error = Some(format!("No se pudo crear la papelera: {err}")),
             }
         }
-        match update_action {
-            Some(UpdateAction::Check) => self.start_check(ui.ctx()),
-            Some(UpdateAction::Install) => self.start_install(ui.ctx()),
-            Some(UpdateAction::Restart) => self.request_restart(ui.ctx()),
-            None => {}
+        if check {
+            self.update_modal = true;
+            self.start_check(ui.ctx());
         }
     }
 
@@ -730,26 +710,18 @@ impl App {
             UpdateState::Checking(rx) => match rx.try_recv() {
                 Ok(Ok(Some(release))) => UpdateState::Available(release),
                 Ok(Ok(None)) => UpdateState::UpToDate,
-                Ok(Err(err)) => {
-                    self.error = Some(err);
-                    UpdateState::Idle
-                }
+                Ok(Err(err)) => UpdateState::Failed(err),
                 Err(TryRecvError::Empty) => UpdateState::Checking(rx),
                 Err(TryRecvError::Disconnected) => {
-                    self.error = Some("El chequeo de actualizaciones se cortó.".into());
-                    UpdateState::Idle
+                    UpdateState::Failed("El chequeo de actualizaciones se cortó.".into())
                 }
             },
             UpdateState::Installing(rx) => match rx.try_recv() {
                 Ok(Ok(tag)) => UpdateState::Installed(tag),
-                Ok(Err(err)) => {
-                    self.error = Some(err);
-                    UpdateState::Idle
-                }
+                Ok(Err(err)) => UpdateState::Failed(err),
                 Err(TryRecvError::Empty) => UpdateState::Installing(rx),
                 Err(TryRecvError::Disconnected) => {
-                    self.error = Some("La instalación se cortó.".into());
-                    UpdateState::Idle
+                    UpdateState::Failed("La instalación se cortó.".into())
                 }
             },
             other => other,
@@ -795,20 +767,19 @@ impl App {
 
     /// Reinicia con el binario nuevo; si hay cambios sin guardar, primero pasa
     /// por el modal de cierre.
-    fn request_restart(&mut self, ctx: &egui::Context) {
+    fn request_restart(&mut self) {
         self.restart = true;
         if let Some(idx) = self.next_dirty_tab() {
             self.pending = Some(CloseTarget::Window(idx));
         } else {
-            self.relaunch();
-            ctx.request_repaint();
+            self.close_now = true;
         }
     }
 
     /// Abre el binario nuevo y deja que eframe cierre y guarde esta instancia.
     fn relaunch(&mut self) {
         self.restart = false;
-        let launched = std::env::current_exe()
+        let launched = update::exe_path()
             .map_err(|err| err.to_string())
             .and_then(|exe| {
                 // La espera deja que eframe guarde app.ron antes de abrir la nueva
@@ -1304,24 +1275,9 @@ impl App {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.scope(|ui| {
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    let text = egui::Color32::from_rgb(0xf7, 0xfb, 0xfb);
-                    widgets.inactive.weak_bg_fill = style::ACCENT;
-                    widgets.hovered.weak_bg_fill = style::ACCENT.gamma_multiply(1.15);
-                    widgets.active.weak_bg_fill = style::ACCENT.gamma_multiply(0.9);
-                    for widget in [
-                        &mut widgets.inactive,
-                        &mut widgets.hovered,
-                        &mut widgets.active,
-                    ] {
-                        widget.fg_stroke = egui::Stroke::new(1.0, text);
-                        widget.bg_stroke = egui::Stroke::NONE;
-                    }
-                    if ui.button("Guardar").clicked() {
-                        choice = Some(Choice::Save);
-                    }
-                });
+                if accent_button(ui, "Guardar").clicked() {
+                    choice = Some(Choice::Save);
+                }
                 if ui.button("Descartar").clicked() {
                     choice = Some(Choice::Discard);
                 }
@@ -1357,6 +1313,91 @@ impl App {
                 self.restart = false;
             }
             None => self.pending = Some(target),
+        }
+    }
+
+    /// Modal de actualizaciones: buscar, instalar y reiniciar en un solo lugar.
+    /// Mientras hay trabajo de red no se puede cerrar.
+    fn update_modal(&mut self, ctx: &egui::Context) {
+        if !self.update_modal {
+            return;
+        }
+        let view = self.update.view();
+        let busy = matches!(view, UpdateView::Checking | UpdateView::Installing);
+        let current = update::CURRENT;
+        let mut action = None;
+        let mut close = false;
+
+        let response = egui::Modal::new(egui::Id::unique("actualizaciones")).show(ctx, |ui| {
+            ui.set_max_width(380.0);
+            ui.heading("Actualizaciones");
+            match &view {
+                UpdateView::Idle => {}
+                UpdateView::Checking => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Buscando actualizaciones…");
+                    });
+                }
+                UpdateView::UpToDate => {
+                    ui.label(format!("Ya tenés la última versión (v{current})."));
+                }
+                UpdateView::Available(tag) => {
+                    ui.label(format!(
+                        "Hay una versión nueva: {tag}. Tenés la v{current}."
+                    ));
+                }
+                UpdateView::Installing => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Instalando actualización…");
+                    });
+                }
+                UpdateView::Installed(tag) => {
+                    ui.label(format!("Actualizado a {tag}."));
+                }
+                UpdateView::Failed(err) => {
+                    ui.colored_label(ui.visuals().error_fg_color, err);
+                }
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let primary = match &view {
+                    UpdateView::Available(_) => Some(("Actualizar", UpdateAction::Install)),
+                    UpdateView::Installed(_) => Some(("Reiniciar ahora", UpdateAction::Restart)),
+                    _ => None,
+                };
+                if let Some((label, choice)) = primary
+                    && accent_button(ui, label).clicked()
+                {
+                    action = Some(choice);
+                }
+                if matches!(view, UpdateView::Failed(_)) && ui.button("Reintentar").clicked() {
+                    action = Some(UpdateAction::Check);
+                }
+                if !busy && ui.button("Cerrar").clicked() {
+                    close = true;
+                }
+            });
+        });
+
+        // Se consulta siempre para consumir Esc; mientras trabaja, no cierra.
+        if response.should_close() && !busy {
+            close = true;
+        }
+
+        if close {
+            self.update_modal = false;
+            self.update = UpdateState::Idle;
+        }
+        match action {
+            Some(UpdateAction::Check) => self.start_check(ctx),
+            Some(UpdateAction::Install) => self.start_install(ctx),
+            Some(UpdateAction::Restart) => {
+                self.update_modal = false;
+                self.request_restart();
+            }
+            None => {}
         }
     }
 
@@ -1397,6 +1438,7 @@ impl App {
         self.editor_panel(ui);
         self.paint_hairlines(ui);
         self.unsaved_modal(&ctx);
+        self.update_modal(&ctx);
 
         // Asegura el frame siguiente, donde se manda el `Close` real.
         if self.close_now {
@@ -1478,6 +1520,27 @@ fn open_folder(path: &Path) -> std::io::Result<()> {
         ))),
         Err(err) => Err(err),
     }
+}
+
+/// Botón con el color de acento: la acción principal de un modal.
+fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.scope(|ui| {
+        let widgets = &mut ui.visuals_mut().widgets;
+        let fg = egui::Color32::from_rgb(0xf7, 0xfb, 0xfb);
+        widgets.inactive.weak_bg_fill = style::ACCENT;
+        widgets.hovered.weak_bg_fill = style::ACCENT.gamma_multiply(1.15);
+        widgets.active.weak_bg_fill = style::ACCENT.gamma_multiply(0.9);
+        for widget in [
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+        ] {
+            widget.fg_stroke = egui::Stroke::new(1.0, fg);
+            widget.bg_stroke = egui::Stroke::NONE;
+        }
+        ui.button(text)
+    })
+    .inner
 }
 
 /// Texto con el punto de «sin guardar» al final, truncable como un solo bloque.
@@ -1945,6 +2008,37 @@ mod ui_tests {
             matches!(h.state().update, UpdateState::Idle),
             "el ítem deshabilitado no debe arrancar el chequeo"
         );
+        assert!(!h.state().update_modal, "ni abrir el modal");
+    }
+
+    #[test]
+    fn el_modal_de_actualizaciones_muestra_el_estado() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "")]);
+        let mut h = harness(tmp.path());
+
+        h.state_mut().update_modal = true;
+        h.state_mut().update = UpdateState::Available(update::Release {
+            tag: "v9.9.9".into(),
+            deb_url: "https://example.com/notetake.deb".into(),
+        });
+        h.run();
+        h.get_by_label("Actualizar");
+
+        h.state_mut().update = UpdateState::Installed("v9.9.9".into());
+        h.run();
+        h.get_by_label("Reiniciar ahora");
+
+        h.state_mut().update = UpdateState::Failed("sin red".into());
+        h.run();
+        h.get_by_label("Reintentar");
+
+        h.state_mut().update = UpdateState::UpToDate;
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(!h.state().update_modal, "Esc oculta el modal");
+        assert!(matches!(h.state().update, UpdateState::Idle));
     }
 
     #[test]
