@@ -1250,6 +1250,23 @@ impl App {
                                 .text_color(ui.visuals().text_color())
                                 .desired_width(width),
                         );
+                        // El click secundario colapsa la selección dentro del
+                        // TextEdit: la restauramos para que siga resaltada
+                        // mientras el menú está abierto.
+                        if ui.input(|input| input.pointer.secondary_pressed())
+                            && let Some(selection) = ui
+                                .ctx()
+                                .data(|data| {
+                                    data.get_temp::<Option<egui::text_selection::CCursorRange>>(
+                                        menu_key,
+                                    )
+                                })
+                                .flatten()
+                            && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id)
+                        {
+                            state.cursor.set_char_range(Some(selection));
+                            state.store(ui.ctx(), editor_id);
+                        }
                         if body.changed() {
                             self.mark_dirty(idx);
                         }
@@ -2107,6 +2124,14 @@ mod ui_tests {
         h.run();
 
         right_click(&mut h, editor);
+        let state = egui::TextEdit::load_state(&h.ctx, egui::Id::unique("cuerpo-editor")).unwrap();
+        assert_eq!(
+            state.cursor.char_range(),
+            Some(egui::text_selection::CCursorRange::select_all_str(
+                "uno\ndos\n"
+            )),
+            "el click derecho no debería perder la selección"
+        );
         h.get_by_label("Cortar").click();
         h.run();
 
