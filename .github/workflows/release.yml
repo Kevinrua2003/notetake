@@ -3,12 +3,58 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    branches: [main]
 
 permissions:
   contents: write
 
+# Serializa los releases: dos push seguidos no compiten por el mismo tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Decidir si corresponde publicar
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "notetake") | .version')
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "El tag $GITHUB_REF_NAME no coincide con Cargo.toml ($tag)" >&2
+              exit 1
+            fi
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Tag manual $tag: se publica."
+            exit 0
+          fi
+
+          # Un push a main publica la versión de Cargo.toml si todavía no tiene
+          # tag. El tag recién se crea cuando el build termina bien.
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "$tag ya existe: no se publica de nuevo."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "Se va a publicar $tag."
+          fi
+
   release:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,15 +67,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dpkg-dev libvulkan1 mesa-vulkan-drivers
 
-      - name: Verificar que el tag coincida con Cargo.toml
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "notetake") | .version')
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "El tag $GITHUB_REF_NAME no coincide con Cargo.toml (v$version)" >&2
-            exit 1
-          fi
-
       - run: cargo test --locked
 
       - run: cargo install cargo-deb --locked
@@ -39,10 +76,17 @@ jobs:
       - name: Publicar release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
             # Reintento de un job fallido: solo reemplaza el artefacto.
-            gh release upload "$GITHUB_REF_NAME" target/debian/*.deb --clobber
+            gh release upload "$tag" target/debian/*.deb --clobber
           else
-            gh release create "$GITHUB_REF_NAME" target/debian/*.deb --generate-notes
+            # Solo en push a main el tag no existe: hay que apuntarlo a este commit.
+            target=()
+            if [ "$GITHUB_REF_TYPE" = "branch" ]; then
+              target=(--target "$GITHUB_SHA")
+            fi
+            gh release create "$tag" target/debian/*.deb "${target[@]}" --generate-notes
           fi

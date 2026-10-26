@@ -137,19 +137,24 @@ más esa misma versión.
 
 Antes de 1.0.0 un breaking change puede ir en el minor.
 
-Para publicar:
+El release es automático: al cambiar `version` en `Cargo.toml` y pushear a
+`main`, el workflow corre los tests, construye el `.deb` con cargo-deb y crea
+el tag `vX.Y.Z` y el Release (con las notas que genera GitHub y el `.deb` como
+asset), siempre que ese tag todavía no exista. No hace falta taggear a mano.
 
 ```bash
-cargo set-version 0.2.0   # cargo-edit; o editar Cargo.toml y correr cargo build
-git commit -am "chore: release v0.2.0"
-git tag v0.2.0
-git push origin main --tags
+cargo set-version 0.3.0   # cargo-edit; o editar Cargo.toml y correr cargo build
+git commit -am "chore: release v0.3.0"
+git push origin main      # el workflow crea v0.3.0 y publica el Release
 ```
 
-`.github/workflows/release.yml` se dispara con el tag: falla si no coincide con
-`Cargo.toml`, corre los tests, construye el `.deb` con cargo-deb y crea el
-Release con las notas que genera GitHub y el `.deb` como asset. Si el job falla
-y lo reintentás, sube el artefacto al Release existente.
+Los push a `main` con una versión ya publicada no hacen nada. Si un release
+falla, se reintenta en el próximo push (el tag recién se crea cuando el build
+termina bien). También se puede taggear y pushear a mano: el workflow valida
+que el tag coincida con `Cargo.toml`.
+
+El tag lo crea el workflow con `GITHUB_TOKEN`, que no dispara otros workflows;
+por eso el build y la publicación viven en la misma corrida.
 
 `.github/workflows/ci.yml` corre los tests en cada push a `main` y en PRs.
 
