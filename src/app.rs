@@ -692,7 +692,7 @@ impl App {
             }
         }
 
-        (close, response.hovered())
+        (close, response.container_contains_pointer())
     }
 
     fn notes_panel(&mut self, ui: &mut egui::Ui) {
@@ -1438,6 +1438,47 @@ mod ui_tests {
             "la nota debería abrirse en un tab"
         );
         assert_eq!(titles(h.state()), ["nota-a"]);
+    }
+
+    #[test]
+    fn cierra_un_tab_inactivo_desde_su_x() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n"), ("nota-b", "dos\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click();
+        h.run();
+        h.get_by_label("nota-b").click();
+        h.run();
+        assert_eq!(h.state().workspace.tabs().len(), 2);
+
+        // El label de la tab es el de más arriba; el de la lista está debajo.
+        let tab = h
+            .get_all_by_label("nota-a")
+            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .unwrap();
+        h.hover_at(tab.rect().center());
+        h.run();
+
+        let closes = h.get_all_by_label("Cerrar tab").collect::<Vec<_>>();
+        assert_eq!(
+            closes.len(),
+            2,
+            "la X del tab inactivo debería verse al pasar el mouse"
+        );
+        let close = closes
+            .iter()
+            .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+            .unwrap()
+            .rect()
+            .center();
+        click(&mut h, close);
+
+        assert_eq!(
+            h.state().workspace.tabs().len(),
+            1,
+            "el tab inactivo debería cerrarse desde su X"
+        );
     }
 
     #[test]
