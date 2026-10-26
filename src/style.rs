@@ -12,9 +12,6 @@ use egui::{
 /// Teal Ocean Depths, para rellenos y bordes.
 pub const ACCENT: Color32 = Color32::from_rgb(0x2d, 0x8b, 0x8b);
 
-/// Columna de lectura del editor.
-pub const READING_WIDTH: f32 = 700.0;
-
 /// Alto de la barra de título propia.
 pub const TITLE_HEIGHT: f32 = 38.0;
 

@@ -79,6 +79,7 @@ pub(crate) enum Icon {
     More,
     Close,
     Back,
+    Trash,
     Minimize,
     Maximize,
     Restore,
@@ -112,6 +113,36 @@ pub(crate) fn icon_button(
     paint_icon(ui.painter(), icon, rect, color);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tooltip));
     response.on_hover_text(tooltip)
+}
+
+/// Botón de ancho completo con ícono a la izquierda y texto alineado.
+/// `label` es el nombre accesible cuando el texto visible no describe la acción.
+pub(crate) fn nav_button(ui: &mut egui::Ui, icon: Icon, text: &str, label: &str) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), egui::Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 6.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 14.0, rect.center().y),
+        egui::vec2(20.0, 20.0),
+    );
+    paint_icon(
+        ui.painter(),
+        icon,
+        icon_rect,
+        ui.visuals().weak_text_color(),
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 28.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        egui::TextStyle::Button.resolve(ui.style()),
+        ui.visuals().text_color(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    response.on_hover_text(label)
 }
 
 pub(crate) fn paint_icon(
@@ -158,6 +189,37 @@ pub(crate) fn paint_icon(
                 [center + egui::vec2(-r, 0.0), center + egui::vec2(r, r)],
                 stroke,
             );
+        }
+        Icon::Trash => {
+            let r = s * 0.18;
+            painter.line_segment(
+                [
+                    center + egui::vec2(-r * 1.3, -s * 0.16),
+                    center + egui::vec2(r * 1.3, -s * 0.16),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(-r * 0.45, -s * 0.22),
+                    center + egui::vec2(r * 0.45, -s * 0.22),
+                ],
+                stroke,
+            );
+            let body = egui::Rect::from_min_max(
+                egui::pos2(center.x - r, center.y - s * 0.09),
+                egui::pos2(center.x + r, center.y + s * 0.22),
+            );
+            painter.rect_stroke(body, 1, stroke, egui::StrokeKind::Inside);
+            for x in [-0.5, 0.5] {
+                painter.line_segment(
+                    [
+                        egui::pos2(center.x + x * r, center.y - s * 0.02),
+                        egui::pos2(center.x + x * r, center.y + s * 0.16),
+                    ],
+                    stroke,
+                );
+            }
         }
         Icon::Minimize => {
             painter.line_segment(

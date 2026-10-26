@@ -7,7 +7,7 @@ use eframe::egui;
 use crate::closing::{Action, Closing, Intent};
 use crate::store;
 use crate::style;
-use crate::ui::{Icon, accent_button, icon_button, paint_icon, snippet, title_job};
+use crate::ui::{Icon, accent_button, icon_button, nav_button, paint_icon, snippet, title_job};
 use crate::update::{self, InstallKind};
 use crate::workspace::{NoteId, Order, Workspace};
 
@@ -575,11 +575,7 @@ impl App {
             self.open_dir(&dir);
         }
         if open_trash {
-            let trash = store::trash_dir(self.workspace.data_dir());
-            match std::fs::create_dir_all(&trash) {
-                Ok(()) => self.open_dir(&trash),
-                Err(err) => self.error = Some(format!("No se pudo crear la papelera: {err}")),
-            }
+            self.open_trash();
         }
         if check {
             self.update_modal = true;
@@ -590,6 +586,14 @@ impl App {
     fn open_dir(&mut self, path: &Path) {
         if let Err(err) = open_folder(path) {
             self.error = Some(format!("No se pudo abrir «{}»: {err}", path.display()));
+        }
+    }
+
+    fn open_trash(&mut self) {
+        let trash = store::trash_dir(self.workspace.data_dir());
+        match std::fs::create_dir_all(&trash) {
+            Ok(()) => self.open_dir(&trash),
+            Err(err) => self.error = Some(format!("No se pudo crear la papelera: {err}")),
         }
     }
 
@@ -810,6 +814,7 @@ impl App {
         let mut delete_notebook = None;
         let mut commit = false;
         let mut back = false;
+        let mut open_trash = false;
         let mut hovered = self.hovered_row;
 
         egui::Panel::left("notas")
@@ -824,20 +829,6 @@ impl App {
                 let current = self.notebook.clone();
                 let notebooks = self.workspace.notebooks().to_vec();
                 let show_notebooks = self.sidebar == SidebarView::Notebooks || current.is_none();
-
-                ui.horizontal(|ui| {
-                    if show_notebooks {
-                        ui.add(egui::Label::new(egui::RichText::new("Cuadernos").strong()));
-                    } else {
-                        if icon_button(ui, Icon::Back, 20.0, "Cuadernos", false).clicked() {
-                            back = true;
-                        }
-                        if let Some(name) = &current {
-                            ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate());
-                        }
-                    }
-                });
-                ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
                     let button_w = 26.0;
@@ -870,6 +861,23 @@ impl App {
                 });
                 ui.add_space(4.0);
 
+                if !show_notebooks && let Some(name) = &current {
+                    if nav_button(ui, Icon::Back, name, "Cuadernos").clicked() {
+                        back = true;
+                    }
+                    ui.add_space(4.0);
+                }
+
+                egui::Panel::bottom("papelera")
+                    .show_separator_line(false)
+                    .frame(egui::Frame::NONE)
+                    .show(ui, |ui| {
+                        ui.add_space(4.0);
+                        if nav_button(ui, Icon::Trash, "Papelera", "Papelera").clicked() {
+                            open_trash = true;
+                        }
+                    });
+
                 if show_notebooks {
                     let query = store::fold(self.search.trim());
                     // La regla del cuaderno actual vive en el margen.
@@ -894,44 +902,66 @@ impl App {
                                         |ui| {
                                             ui.set_width(ui.available_width());
                                             ui.set_min_height(40.0);
-                                            egui::Sides::new().height(40.0).shrink_left().show(
-                                                ui,
-                                                |ui| {
-                                                    ui.add(
-                                                        egui::Label::new(egui::RichText::new(name))
-                                                            .truncate()
-                                                            .selectable(false),
-                                                    );
-                                                },
-                                                |ui| {
-                                                    let response = icon_button(
-                                                        ui,
-                                                        Icon::More,
-                                                        20.0,
-                                                        "Más acciones",
-                                                        false,
-                                                    );
-                                                    egui::Popup::menu(&response).show(|ui| {
-                                                        match notebook_menu(ui) {
-                                                            Some(NotebookAction::Rename) => {
-                                                                rename_notebook = Some(name.clone())
-                                                            }
-                                                            Some(NotebookAction::Delete) => {
-                                                                delete_notebook = Some(name.clone())
-                                                            }
-                                                            None => {}
-                                                        }
-                                                    });
-                                                    let notes = match count {
-                                                        0 => "Sin notas".to_owned(),
-                                                        1 => "1 nota".to_owned(),
-                                                        n => format!("{n} notas"),
-                                                    };
-                                                    ui.add(egui::Label::new(
-                                                        egui::RichText::new(notes).small().weak(),
-                                                    ));
-                                                },
-                                            );
+                                            egui::Frame::NONE
+                                                .inner_margin(egui::Margin {
+                                                    left: 8,
+                                                    right: 8,
+                                                    top: 0,
+                                                    bottom: 0,
+                                                })
+                                                .show(ui, |ui| {
+                                                    egui::Sides::new()
+                                                        .height(40.0)
+                                                        .shrink_left()
+                                                        .show(
+                                                            ui,
+                                                            |ui| {
+                                                                ui.add(
+                                                                    egui::Label::new(
+                                                                        egui::RichText::new(name),
+                                                                    )
+                                                                    .truncate()
+                                                                    .selectable(false),
+                                                                );
+                                                            },
+                                                            |ui| {
+                                                                let response = icon_button(
+                                                                    ui,
+                                                                    Icon::More,
+                                                                    20.0,
+                                                                    "Más acciones",
+                                                                    false,
+                                                                );
+                                                                egui::Popup::menu(&response).show(
+                                                                    |ui| match notebook_menu(ui) {
+                                                                        Some(
+                                                                            NotebookAction::Rename,
+                                                                        ) => {
+                                                                            rename_notebook =
+                                                                                Some(name.clone())
+                                                                        }
+                                                                        Some(
+                                                                            NotebookAction::Delete,
+                                                                        ) => {
+                                                                            delete_notebook =
+                                                                                Some(name.clone())
+                                                                        }
+                                                                        None => {}
+                                                                    },
+                                                                );
+                                                                let notes = match count {
+                                                                    0 => "Sin notas".to_owned(),
+                                                                    1 => "1 nota".to_owned(),
+                                                                    n => format!("{n} notas"),
+                                                                };
+                                                                ui.add(egui::Label::new(
+                                                                    egui::RichText::new(notes)
+                                                                        .small()
+                                                                        .weak(),
+                                                                ));
+                                                            },
+                                                        );
+                                                });
                                         },
                                     )
                                     .response;
@@ -1056,96 +1086,112 @@ impl App {
                                         ui.set_width(ui.available_width());
                                         ui.set_min_height(44.0);
                                         ui.add_space(4.0);
-                                        egui::Sides::new().shrink_left().show(
-                                            ui,
-                                            |ui| {
-                                                ui.vertical(|ui| {
-                                                    ui.spacing_mut().item_spacing.y = 2.0;
-                                                    let color = ui.visuals().text_color();
-                                                    ui.add(
-                                                        egui::Label::new(title_job(
-                                                            &note.title,
-                                                            color,
-                                                            13.5,
-                                                            dirty.then(|| {
-                                                                style::accent(ui.visuals())
-                                                            }),
-                                                        ))
-                                                        .truncate()
-                                                        .selectable(false),
-                                                    );
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            egui::RichText::new(&snippet)
-                                                                .small()
-                                                                .weak(),
-                                                        )
-                                                        .truncate()
-                                                        .selectable(false),
-                                                    );
-                                                });
-                                            },
-                                            |ui| {
-                                                let response = icon_button(
+                                        egui::Frame::NONE
+                                            .inner_margin(egui::Margin {
+                                                left: 8,
+                                                right: 8,
+                                                top: 0,
+                                                bottom: 0,
+                                            })
+                                            .show(ui, |ui| {
+                                                egui::Sides::new().shrink_left().show(
                                                     ui,
-                                                    Icon::More,
-                                                    20.0,
-                                                    "Más acciones",
-                                                    false,
+                                                    |ui| {
+                                                        ui.vertical(|ui| {
+                                                            ui.spacing_mut().item_spacing.y = 2.0;
+                                                            let color = ui.visuals().text_color();
+                                                            ui.add(
+                                                                egui::Label::new(title_job(
+                                                                    &note.title,
+                                                                    color,
+                                                                    13.5,
+                                                                    dirty.then(|| {
+                                                                        style::accent(ui.visuals())
+                                                                    }),
+                                                                ))
+                                                                .truncate()
+                                                                .selectable(false),
+                                                            );
+                                                            ui.add(
+                                                                egui::Label::new(
+                                                                    egui::RichText::new(&snippet)
+                                                                        .small()
+                                                                        .weak(),
+                                                                )
+                                                                .truncate()
+                                                                .selectable(false),
+                                                            );
+                                                        });
+                                                    },
+                                                    |ui| {
+                                                        let response = icon_button(
+                                                            ui,
+                                                            Icon::More,
+                                                            20.0,
+                                                            "Más acciones",
+                                                            false,
+                                                        );
+                                                        if egui::Popup::is_id_open(
+                                                            ui.ctx(),
+                                                            egui::Popup::default_response_id(
+                                                                &response,
+                                                            ),
+                                                        ) {
+                                                            ui.painter().rect_filled(
+                                                                response.rect,
+                                                                4.0,
+                                                                ui.visuals()
+                                                                    .widgets
+                                                                    .hovered
+                                                                    .weak_bg_fill,
+                                                            );
+                                                            paint_icon(
+                                                                ui.painter(),
+                                                                Icon::More,
+                                                                response.rect,
+                                                                ui.visuals().strong_text_color(),
+                                                            );
+                                                        }
+                                                        egui::Popup::menu(&response).show(|ui| {
+                                                            match note_menu(
+                                                                ui,
+                                                                &note_notebook,
+                                                                self.workspace.notebooks(),
+                                                            ) {
+                                                                Some(NoteAction::Open) => {
+                                                                    open = Some(id)
+                                                                }
+                                                                Some(NoteAction::Rename) => {
+                                                                    rename = Some(id)
+                                                                }
+                                                                Some(NoteAction::MoveTo(name)) => {
+                                                                    move_to = Some((id, name))
+                                                                }
+                                                                Some(NoteAction::Delete) => {
+                                                                    delete = Some(id)
+                                                                }
+                                                                None => {}
+                                                            }
+                                                        });
+                                                        if show_close {
+                                                            if icon_button(
+                                                                ui,
+                                                                Icon::Close,
+                                                                20.0,
+                                                                "Mover a papelera",
+                                                                true,
+                                                            )
+                                                            .clicked()
+                                                            {
+                                                                delete = Some(id);
+                                                            }
+                                                        } else {
+                                                            // Reserva el lugar del `×` para que los 3 puntos no salten.
+                                                            ui.add_space(20.0);
+                                                        }
+                                                    },
                                                 );
-                                                if egui::Popup::is_id_open(
-                                                    ui.ctx(),
-                                                    egui::Popup::default_response_id(&response),
-                                                ) {
-                                                    ui.painter().rect_filled(
-                                                        response.rect,
-                                                        4.0,
-                                                        ui.visuals().widgets.hovered.weak_bg_fill,
-                                                    );
-                                                    paint_icon(
-                                                        ui.painter(),
-                                                        Icon::More,
-                                                        response.rect,
-                                                        ui.visuals().strong_text_color(),
-                                                    );
-                                                }
-                                                egui::Popup::menu(&response).show(|ui| {
-                                                    match note_menu(
-                                                        ui,
-                                                        &note_notebook,
-                                                        self.workspace.notebooks(),
-                                                    ) {
-                                                        Some(NoteAction::Open) => open = Some(id),
-                                                        Some(NoteAction::Rename) => {
-                                                            rename = Some(id)
-                                                        }
-                                                        Some(NoteAction::MoveTo(name)) => {
-                                                            move_to = Some((id, name))
-                                                        }
-                                                        Some(NoteAction::Delete) => {
-                                                            delete = Some(id)
-                                                        }
-                                                        None => {}
-                                                    }
-                                                });
-                                                if show_close {
-                                                    if icon_button(
-                                                        ui,
-                                                        Icon::Close,
-                                                        20.0,
-                                                        "Mover a papelera",
-                                                        true,
-                                                    )
-                                                    .clicked()
-                                                    {
-                                                        delete = Some(id);
-                                                    }
-                                                } else {
-                                                    // Reserva el lugar del `×` para que los 3 puntos no salten.
-                                                    ui.add_space(20.0);
-                                                }
-                                            },
-                                        );
+                                            });
                                     },
                                 )
                                 .response;
@@ -1217,6 +1263,9 @@ impl App {
             });
 
         self.hovered_row = hovered;
+        if open_trash {
+            self.open_trash();
+        }
         if back {
             self.sidebar = SidebarView::Notebooks;
             self.search.clear();
@@ -1286,7 +1335,6 @@ impl App {
                 return;
             };
 
-            let width = style::READING_WIDTH.min(ui.available_width() - 16.0);
             ui.add_space(18.0);
             let editor_id = egui::Id::unique("cuerpo-editor");
             let menu_key = editor_id.with("seleccion-menu");
@@ -1309,7 +1357,7 @@ impl App {
                     // shortcut: fila estimada en 22 px (15 px + 4 de aire);
                     // si cambia la escala del editor, recalcular.
                     let rows = (((ui.available_height() - 40.0) / 22.0).floor() as usize).max(1);
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         self.workspace.edit(id, |note| {
                             let body = ui.add(
                                 egui::TextEdit::multiline(&mut note.body)
@@ -1320,7 +1368,7 @@ impl App {
                                     .frame(egui::Frame::NONE)
                                     .margin(egui::Margin::same(0))
                                     .text_color(ui.visuals().text_color())
-                                    .desired_width(width),
+                                    .desired_width(ui.available_width()),
                             );
                             // El click secundario colapsa la selección dentro del
                             // TextEdit: la restauramos para que siga resaltada
