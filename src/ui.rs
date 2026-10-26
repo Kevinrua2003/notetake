@@ -78,6 +78,7 @@ pub(crate) enum Icon {
     Plus,
     More,
     Close,
+    Back,
     Minimize,
     Maximize,
     Restore,
@@ -144,6 +145,17 @@ pub(crate) fn paint_icon(
             );
             painter.line_segment(
                 [center + egui::vec2(r, -r), center + egui::vec2(-r, r)],
+                stroke,
+            );
+        }
+        Icon::Back => {
+            let r = s * 0.18;
+            painter.line_segment(
+                [center + egui::vec2(r, -r), center + egui::vec2(-r, 0.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [center + egui::vec2(-r, 0.0), center + egui::vec2(r, r)],
                 stroke,
             );
         }

@@ -1,4 +1,4 @@
-//! Identidad visual: Inter, neutros tipo Notion y un único acento teal.
+//! Identidad visual: Inter y la paleta Ocean Depths (navy, teal, seafoam, cream).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use egui::{
     Style, TextStyle, Visuals,
 };
 
-/// Teal base, para rellenos y bordes.
+/// Teal Ocean Depths, para rellenos y bordes.
 pub const ACCENT: Color32 = Color32::from_rgb(0x2d, 0x8b, 0x8b);
 
 /// Columna de lectura del editor.
@@ -81,33 +81,33 @@ struct Palette {
 fn palette(dark: bool) -> Palette {
     if dark {
         Palette {
-            canvas: Color32::from_rgb(0x19, 0x19, 0x19),
-            chrome: Color32::from_rgb(0x20, 0x20, 0x20),
-            window: Color32::from_rgb(0x24, 0x24, 0x24),
-            field: Color32::from_rgb(0x25, 0x25, 0x25),
-            hover: Color32::from_rgb(0x2b, 0x2b, 0x2b),
-            pressed: Color32::from_rgb(0x33, 0x33, 0x33),
-            hairline: Color32::from_rgb(0x2e, 0x2e, 0x2e),
-            text: Color32::from_rgb(0xec, 0xec, 0xec),
-            weak: Color32::from_rgb(0x9c, 0x9c, 0x9c),
-            rail: Color32::from_rgb(0x42, 0x42, 0x42),
-            accent_ink: Color32::from_rgb(0x5f, 0xc3, 0xc3),
+            canvas: Color32::from_rgb(0x1a, 0x23, 0x32),
+            chrome: Color32::from_rgb(0x1e, 0x2a, 0x3b),
+            window: Color32::from_rgb(0x20, 0x2c, 0x3e),
+            field: Color32::from_rgb(0x24, 0x32, 0x47),
+            hover: Color32::from_rgb(0x28, 0x38, 0x4e),
+            pressed: Color32::from_rgb(0x2e, 0x40, 0x58),
+            hairline: Color32::from_rgb(0x2c, 0x3d, 0x52),
+            text: Color32::from_rgb(0xf1, 0xfa, 0xee),
+            weak: Color32::from_rgb(0x95, 0xa9, 0xb3),
+            rail: Color32::from_rgb(0x3a, 0x4d, 0x63),
+            accent_ink: Color32::from_rgb(0xa8, 0xda, 0xdc),
             selection_alpha: 0.3,
             active_alpha: 0.2,
         }
     } else {
         Palette {
-            canvas: Color32::WHITE,
-            chrome: Color32::from_rgb(0xf7, 0xf7, 0xf5),
-            window: Color32::WHITE,
-            field: Color32::from_rgb(0xf1, 0xf1, 0xee),
-            hover: Color32::from_rgb(0xed, 0xed, 0xea),
-            pressed: Color32::from_rgb(0xe5, 0xe5, 0xe1),
-            hairline: Color32::from_rgb(0xe4, 0xe4, 0xe0),
-            text: Color32::from_rgb(0x1d, 0x1d, 0x1b),
-            weak: Color32::from_rgb(0x6b, 0x6b, 0x67),
-            rail: Color32::from_rgb(0xcd, 0xcd, 0xc7),
-            accent_ink: Color32::from_rgb(0x14, 0x70, 0x70),
+            canvas: Color32::from_rgb(0xf1, 0xfa, 0xee),
+            chrome: Color32::from_rgb(0xe8, 0xf2, 0xec),
+            window: Color32::from_rgb(0xf7, 0xfb, 0xf7),
+            field: Color32::from_rgb(0xe3, 0xee, 0xe7),
+            hover: Color32::from_rgb(0xdf, 0xea, 0xe4),
+            pressed: Color32::from_rgb(0xd6, 0xe3, 0xdc),
+            hairline: Color32::from_rgb(0xd2, 0xe2, 0xd9),
+            text: Color32::from_rgb(0x1a, 0x23, 0x32),
+            weak: Color32::from_rgb(0x55, 0x66, 0x6f),
+            rail: Color32::from_rgb(0xb9, 0xce, 0xc5),
+            accent_ink: Color32::from_rgb(0x1b, 0x70, 0x70),
             selection_alpha: 0.22,
             active_alpha: 0.16,
         }

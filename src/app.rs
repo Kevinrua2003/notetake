@@ -86,6 +86,14 @@ enum Prompt {
     RenameNotebook(String),
 }
 
+/// Qué lista muestra el sidebar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SidebarView {
+    #[default]
+    Notes,
+    Notebooks,
+}
+
 /// Chequeo de actualizaciones. El trabajo de red corre en un thread aparte y
 /// deja el resultado en el canal.
 enum UpdateState {
@@ -136,6 +144,8 @@ pub struct App {
     search: String,
     /// Cuaderno visible en el sidebar; independiente de la nota abierta.
     notebook: Option<String>,
+    /// Lista de cuadernos o notas del cuaderno elegido.
+    sidebar: SidebarView,
     error: Option<String>,
     hovered_row: Option<NoteId>,
     hovered_tab: Option<NoteId>,
@@ -191,6 +201,7 @@ impl App {
         Self {
             workspace,
             notebook,
+            sidebar: SidebarView::default(),
             search: String::new(),
             error: None,
             hovered_row: None,
@@ -254,6 +265,7 @@ impl App {
         match self.workspace.create(&notebook) {
             Ok(id) => {
                 self.workspace.open(id);
+                self.sidebar = SidebarView::Notes;
                 self.start_rename(id);
                 self.error = None;
             }
@@ -797,6 +809,7 @@ impl App {
         let mut rename_notebook = None;
         let mut delete_notebook = None;
         let mut commit = false;
+        let mut back = false;
         let mut hovered = self.hovered_row;
 
         egui::Panel::left("notas")
@@ -809,39 +822,21 @@ impl App {
             )
             .show(ui, |ui| {
                 let current = self.notebook.clone();
-                let mut chosen = current.clone();
-                egui::ComboBox::new("cuaderno", "Cuaderno")
-                    .selected_text(current.as_deref().unwrap_or("Sin cuaderno"))
-                    .width((ui.available_width() - 78.0).max(120.0))
-                    .show_ui(ui, |ui| {
-                        for name in self.workspace.notebooks() {
-                            if ui
-                                .selectable_label(chosen.as_deref() == Some(name.as_str()), name)
-                                .clicked()
-                            {
-                                chosen = Some(name.clone());
-                                ui.close();
-                            }
+                let notebooks = self.workspace.notebooks().to_vec();
+                let show_notebooks = self.sidebar == SidebarView::Notebooks || current.is_none();
+
+                ui.horizontal(|ui| {
+                    if show_notebooks {
+                        ui.add(egui::Label::new(egui::RichText::new("Cuadernos").strong()));
+                    } else {
+                        if icon_button(ui, Icon::Back, 20.0, "Cuadernos", false).clicked() {
+                            back = true;
                         }
-                        ui.separator();
-                        if ui.button("Nuevo cuaderno…").clicked() {
-                            create_notebook = true;
-                            ui.close();
+                        if let Some(name) = &current {
+                            ui.add(egui::Label::new(egui::RichText::new(name).strong()).truncate());
                         }
-                        if let Some(name) = current.clone() {
-                            if ui.button("Renombrar cuaderno…").clicked() {
-                                rename_notebook = Some(name.clone());
-                                ui.close();
-                            }
-                            if ui.button("Eliminar cuaderno…").clicked() {
-                                delete_notebook = Some(name.clone());
-                                ui.close();
-                            }
-                        }
-                    });
-                if chosen != current {
-                    select = Some(chosen);
-                }
+                    }
+                });
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
@@ -850,17 +845,149 @@ impl App {
                     let search = ui.add_sized(
                         egui::vec2(search_w, 24.0),
                         egui::TextEdit::singleline(&mut self.search)
-                            .hint_text("Buscar…  (Ctrl+F)")
+                            .hint_text(if show_notebooks {
+                                "Buscar cuaderno…"
+                            } else {
+                                "Buscar…  (Ctrl+F)"
+                            })
                             .desired_width(search_w),
                     );
                     if std::mem::take(&mut self.focus_search) {
                         search.request_focus();
                     }
-                    if icon_button(ui, Icon::Plus, 24.0, "Nueva nota (Ctrl+N)", false).clicked() {
-                        self.new_note();
+                    let (tip, new_notebook) = if show_notebooks {
+                        ("Nuevo cuaderno", true)
+                    } else {
+                        ("Nueva nota (Ctrl+N)", false)
+                    };
+                    if icon_button(ui, Icon::Plus, 24.0, tip, false).clicked() {
+                        if new_notebook {
+                            create_notebook = true;
+                        } else {
+                            self.new_note();
+                        }
                     }
                 });
                 ui.add_space(4.0);
+
+                if show_notebooks {
+                    let query = store::fold(self.search.trim());
+                    // La regla del cuaderno actual vive en el margen.
+                    let rail_x = ui.max_rect().left() - 5.0;
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("lista-cuadernos")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            let mut visibles = 0;
+
+                            for name in notebooks.iter().filter(|name| {
+                                query.is_empty() || store::fold(name).contains(&query)
+                            }) {
+                                visibles += 1;
+                                let count = self.workspace.notebook_len(name);
+                                let is_active = current.as_deref() == Some(name.as_str());
+                                let bg = ui.painter().add(egui::Shape::Noop);
+                                let row = ui
+                                    .scope_builder(
+                                        egui::UiBuilder::new().sense(egui::Sense::click()),
+                                        |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.set_min_height(40.0);
+                                            egui::Sides::new().height(40.0).shrink_left().show(
+                                                ui,
+                                                |ui| {
+                                                    ui.add(
+                                                        egui::Label::new(egui::RichText::new(name))
+                                                            .truncate()
+                                                            .selectable(false),
+                                                    );
+                                                },
+                                                |ui| {
+                                                    let response = icon_button(
+                                                        ui,
+                                                        Icon::More,
+                                                        20.0,
+                                                        "Más acciones",
+                                                        false,
+                                                    );
+                                                    egui::Popup::menu(&response).show(|ui| {
+                                                        match notebook_menu(ui) {
+                                                            Some(NotebookAction::Rename) => {
+                                                                rename_notebook = Some(name.clone())
+                                                            }
+                                                            Some(NotebookAction::Delete) => {
+                                                                delete_notebook = Some(name.clone())
+                                                            }
+                                                            None => {}
+                                                        }
+                                                    });
+                                                    let notes = match count {
+                                                        0 => "Sin notas".to_owned(),
+                                                        1 => "1 nota".to_owned(),
+                                                        n => format!("{n} notas"),
+                                                    };
+                                                    ui.add(egui::Label::new(
+                                                        egui::RichText::new(notes).small().weak(),
+                                                    ));
+                                                },
+                                            );
+                                        },
+                                    )
+                                    .response;
+
+                                if row.hovered() || is_active {
+                                    let fill = if is_active {
+                                        style::active_fill(ui.visuals())
+                                    } else {
+                                        ui.visuals().widgets.hovered.weak_bg_fill
+                                    };
+                                    ui.painter()
+                                        .set(bg, egui::Shape::rect_filled(row.rect, 6.0, fill));
+                                    if is_active {
+                                        let rule = egui::Rect::from_min_size(
+                                            egui::pos2(rail_x, row.rect.center().y - 9.0),
+                                            egui::vec2(2.0, 18.0),
+                                        );
+                                        ui.painter().rect_filled(
+                                            rule,
+                                            1.0,
+                                            style::accent(ui.visuals()),
+                                        );
+                                    }
+                                }
+                                if row.clicked() {
+                                    select = Some(Some(name.clone()));
+                                }
+                                row.container_context_menu(|ui| match notebook_menu(ui) {
+                                    Some(NotebookAction::Rename) => {
+                                        rename_notebook = Some(name.clone())
+                                    }
+                                    Some(NotebookAction::Delete) => {
+                                        delete_notebook = Some(name.clone())
+                                    }
+                                    None => {}
+                                });
+                            }
+
+                            if visibles == 0 {
+                                ui.add_space(8.0);
+                                if notebooks.is_empty() {
+                                    ui.weak("Todavía no hay cuadernos.");
+                                    ui.add_space(2.0);
+                                    if ui.button("Crear cuaderno").clicked() {
+                                        create_notebook = true;
+                                    }
+                                } else {
+                                    ui.weak(format!(
+                                        "Sin resultados para «{}».",
+                                        self.search.trim()
+                                    ));
+                                }
+                            }
+                        });
+                    return;
+                }
 
                 let notebook = self.notebook.clone();
                 let ids = notebook
@@ -1090,8 +1217,14 @@ impl App {
             });
 
         self.hovered_row = hovered;
+        if back {
+            self.sidebar = SidebarView::Notebooks;
+            self.search.clear();
+        }
         if let Some(notebook) = select {
             self.notebook = notebook;
+            self.sidebar = SidebarView::Notes;
+            self.search.clear();
         }
         if let Some(id) = open {
             self.workspace.open(id);
@@ -1430,7 +1563,10 @@ impl App {
         };
         match result {
             Ok(name) => {
-                if creating || renamed_from.as_deref() == self.notebook.as_deref() {
+                if creating {
+                    self.notebook = Some(name);
+                    self.sidebar = SidebarView::Notes;
+                } else if renamed_from.as_deref() == self.notebook.as_deref() {
                     self.notebook = Some(name);
                 }
                 self.prompt = None;
@@ -1705,6 +1841,26 @@ enum NoteAction {
     Rename,
     MoveTo(String),
     Delete,
+}
+
+enum NotebookAction {
+    Rename,
+    Delete,
+}
+
+/// Opciones de un cuaderno, compartidas por el click derecho y los 3 puntos.
+fn notebook_menu(ui: &mut egui::Ui) -> Option<NotebookAction> {
+    let mut action = None;
+    if ui.button("Renombrar cuaderno…").clicked() {
+        action = Some(NotebookAction::Rename);
+    }
+    if ui.button("Eliminar cuaderno…").clicked() {
+        action = Some(NotebookAction::Delete);
+    }
+    if action.is_some() {
+        ui.close();
+    }
+    action
 }
 
 /// Opciones de una nota, compartidas por el click derecho y el botón de 3 puntos.
@@ -2448,7 +2604,7 @@ mod ui_tests {
     }
 
     #[test]
-    fn selector_filtra_las_notas_por_cuaderno() {
+    fn elegir_cuaderno_filtra_las_notas() {
         let tmp = tempfile::tempdir().unwrap();
         seed(tmp.path(), &[("nota-a", "uno\n")]);
         seed_in(tmp.path(), "trabajo", &[("nota-b", "dos\n")]);
@@ -2457,13 +2613,92 @@ mod ui_tests {
         assert!(h.query_by_label("nota-a").is_some());
         assert!(h.query_by_label("nota-b").is_none());
 
-        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.get_by_label("Cuadernos").click();
         h.run();
         h.get_by_label("trabajo").click();
         h.run();
 
         assert!(h.query_by_label("nota-a").is_none());
         assert!(h.query_by_label("nota-b").is_some());
+    }
+
+    #[test]
+    fn volver_muestra_cuadernos_y_elegir_vuelve_a_notas() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        seed_in(tmp.path(), "trabajo", &[("nota-b", "dos\n")]);
+        let mut h = harness(tmp.path());
+
+        assert_eq!(h.state().sidebar, SidebarView::Notes);
+        h.get_by_label("Cuadernos").click();
+        h.run();
+
+        assert_eq!(h.state().sidebar, SidebarView::Notebooks);
+        assert!(h.query_by_label("nota-a").is_none());
+        assert!(h.query_by_label("trabajo").is_some());
+
+        h.get_by_label("trabajo").click();
+        h.run();
+
+        assert_eq!(h.state().sidebar, SidebarView::Notes);
+        assert!(h.query_by_label("nota-b").is_some());
+    }
+
+    #[test]
+    fn control_n_desde_cuadernos_vuelve_a_las_notas() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("Cuadernos").click();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
+        h.run();
+
+        assert_eq!(h.state().sidebar, SidebarView::Notes);
+        assert_eq!(
+            h.state()
+                .workspace
+                .visible(Order::Alphabetical, "", "general")
+                .len(),
+            2,
+            "Ctrl+N debería crear la nota en el cuaderno actual"
+        );
+    }
+
+    #[test]
+    fn lista_de_cuadernos_muestra_contadores() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n"), ("nota-b", "dos\n")]);
+        seed_in(tmp.path(), "trabajo", &[("nota-c", "tres\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("Cuadernos").click();
+        h.run();
+
+        assert!(h.query_by_label("2 notas").is_some());
+        assert!(h.query_by_label("1 nota").is_some());
+    }
+
+    #[test]
+    fn busqueda_filtra_cuadernos() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        seed_in(tmp.path(), "trabajo", &[("nota-b", "dos\n")]);
+        seed_in(tmp.path(), "ideas", &[("nota-c", "tres\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("Cuadernos").click();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+        h.run();
+        h.event(egui::Event::Text("tra".to_owned()));
+        h.run();
+
+        assert_eq!(h.state().search, "tra");
+        assert!(h.query_by_label("trabajo").is_some());
+        assert!(h.query_by_label("general").is_none());
+        assert!(h.query_by_label("ideas").is_none());
     }
 
     #[test]
@@ -2475,7 +2710,7 @@ mod ui_tests {
 
         h.get_by_label("nota-a").click();
         h.run();
-        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.get_by_label("Cuadernos").click();
         h.run();
         h.get_by_label("trabajo").click();
         h.run();
@@ -2625,7 +2860,9 @@ mod ui_tests {
         seed(tmp.path(), &[("nota-a", "uno\n"), ("nota-b", "dos\n")]);
         let mut h = harness(tmp.path());
 
-        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.get_by_label("Cuadernos").click();
+        h.run();
+        h.get_by_label("Más acciones").click();
         h.run();
         h.get_by_label("Eliminar cuaderno…").click();
         h.run();
@@ -2639,7 +2876,7 @@ mod ui_tests {
         h.run();
         assert!(tmp.path().join("general/nota-a").is_dir());
 
-        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.get_by_label("Más acciones").click();
         h.run();
         h.get_by_label("Eliminar cuaderno…").click();
         h.run();
@@ -2725,6 +2962,15 @@ mod ui_tests {
             .save(std::env::temp_dir().join("kt-rename.png"))
             .unwrap();
         h.key_press(egui::Key::Escape);
+        h.run();
+
+        h.get_by_label("Cuadernos").click();
+        h.run();
+        let cuadernos = h.render().expect("render wgpu");
+        cuadernos
+            .save(std::env::temp_dir().join("kt-notebooks.png"))
+            .unwrap();
+        h.get_by_label("general").click();
         h.run();
 
         h.get_by_label("Ajustes").click();

@@ -21,18 +21,23 @@ redimensionar. La hamburguesa de la izquierda abre los ajustes: tema
 (claro/oscuro/sistema), orden de la lista (alfabético/reciente) y acceso a la
 carpeta de datos y a la papelera.
 
-Arriba de la lista está el selector de cuaderno. La lista, la búsqueda y `Ctrl+N`
-trabajan sobre el cuaderno elegido. Cambiar de cuaderno solo filtra el sidebar:
-la nota abierta sigue en su tab aunque sea de otro cuaderno. Si todavía no hay
-cuadernos, la app muestra un estado vacío con «Crear cuaderno».
+El sidebar tiene dos vistas. La de notas muestra arriba el cuaderno actual y una
+flecha para volver a la lista de cuadernos. La de cuadernos lista todos con su
+cantidad de notas y un menú de 3 puntos para renombrar o eliminar. El buscador y
+`Ctrl+F` filtran la vista visible (cuadernos o notas), y el `+` crea una nota o un
+cuaderno según la vista. Al arrancar abre las notas del último cuaderno usado.
 
-El menú del selector permite crear, renombrar y eliminar cuadernos. Eliminar un
-cuaderno mueve su carpeta completa a `_trash/` y el modal avisa que se eliminan
-todas sus notas. Borrar una nota también pide confirmación; si tiene cambios sin
-guardar, ofrece «Cancelar / Guardar y mover / Descartar y mover».
+Elegir un cuaderno solo filtra el sidebar: la nota abierta sigue en su tab aunque
+sea de otro cuaderno. Si todavía no hay cuadernos, la app muestra un estado vacío
+con «Crear cuaderno».
 
-La interfaz usa Inter (incrustada, sin dependencias del sistema), grises neutros
-y un único acento teal. El cuerpo se escribe en una columna de 700 px centrada,
+Eliminar un cuaderno mueve su carpeta completa a `_trash/` y el modal avisa que se
+eliminan todas sus notas. Borrar una nota también pide confirmación; si tiene
+cambios sin guardar, ofrece «Cancelar / Guardar y mover / Descartar y mover».
+
+La interfaz usa Inter (incrustada, sin dependencias del sistema) y la paleta Ocean
+Depths (navy, teal, seafoam y cream) con un único acento teal. El cuerpo se escribe
+en una columna de 700 px centrada,
 las filas de la lista muestran título y primera línea, y el punto teal junto al
 nombre indica cambios sin guardar. La nota abierta se marca con una regla teal
 en el margen izquierdo; en el modal, «Guardar» es la acción primaria.
@@ -106,8 +111,8 @@ cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
 
-- `src/style.rs` — identidad visual: fuente Inter, escala, neutros claro/oscuro,
-  acento y métricas (ancho de lectura, sidebar, barra de título).
+- `src/style.rs` — identidad visual: fuente Inter, escala, paleta Ocean Depths
+  claro/oscuro, acento y métricas (ancho de lectura, sidebar, barra de título).
 - `src/store.rs` — acceso a disco sin dependencias: descubrir cuadernos y notas,
   leer, guardar atómico (`note.md.tmp` + `rename`), renombrar, mover entre
   cuadernos, mover a `_trash`, títulos exactos y fold de acentos.
@@ -119,7 +124,7 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 - `src/ui.rs` — widgets dibujados a mano: íconos, botón de acento, título con el
   punto de «sin guardar» y recorte del snippet de la fila.
 - `src/app.rs` — UI egui y estado de vista: barra de título propia, ajustes
-  (tema, orden y carpetas), selector de cuaderno, lista, búsqueda, menús
+  (tema, orden y carpetas), vistas de cuadernos y notas, búsqueda, menús
   contextuales y modales (incluidas las confirmaciones de borrado).
 - `src/update.rs` — chequeo e instalación desde GitHub Releases (solo Linux).
 - `src/main.rs` — arranque, resolución del data dir, ventana e icono.
