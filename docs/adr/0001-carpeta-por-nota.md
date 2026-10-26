@@ -8,10 +8,11 @@ por archivos (Dropbox, Nextcloud), borrarse sin perderlas y editarse a mano.
 ## Decisión
 
 Cada nota es `<data>/<cuaderno>/<nota>/note.md`. El título es el nombre de la
-carpeta de la nota, ya pasado por `slugify`; el cuerpo es el contenido de
-`note.md`. Cada cuaderno es una carpeta directa del data dir y existe por su
-marcador `.notebook` o por tener al menos una nota. Borrar mueve la carpeta de la
-nota a `_trash/`; borrar un cuaderno mueve la carpeta completa.
+carpeta de la nota, tal cual se escribe; `sanitize_title` solo resuelve lo que el
+sistema de archivos no admite. El cuerpo es el contenido de `note.md`. Cada
+cuaderno es una carpeta directa del data dir y existe por su marcador `.notebook`
+o por tener al menos una nota. Borrar mueve la carpeta de la nota a `_trash/`;
+borrar un cuaderno mueve la carpeta completa.
 
 ## Consecuencias
 

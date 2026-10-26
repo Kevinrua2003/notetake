@@ -110,7 +110,7 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
   acento y métricas (ancho de lectura, sidebar, barra de título).
 - `src/store.rs` — acceso a disco sin dependencias: descubrir cuadernos y notas,
   leer, guardar atómico (`note.md.tmp` + `rename`), renombrar, mover entre
-  cuadernos, mover a `_trash`, slug y fold de acentos.
+  cuadernos, mover a `_trash`, títulos exactos y fold de acentos.
 - `src/workspace.rs` — notas, cuadernos, tabs, foco, cambios sin guardar y renombre
   con `NoteId` estable: los índices no salen del módulo. Es dueño del disco
   (crear, guardar, renombrar, mover, papelera y reconciliación al recuperar foco).

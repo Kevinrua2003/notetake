@@ -7,8 +7,10 @@ nuevos se agregan acá antes de nombrar un módulo.
 - **Cuaderno**: carpeta directa del data dir que agrupa notas. Un solo nivel, sin
   anidarse. Existe por su marcador `.notebook` o por tener al menos una nota.
 - **Carpeta**: ubicación de una nota dentro de un cuaderno. Su nombre es el título.
-- **Título**: nombre de carpeta ya pasado por `slugify` (`Mi Nota` → `mi-nota`).
-  Único por cuaderno: una colisión suma `-2`, `-3`.
+- **Título**: nombre de carpeta, tal cual se escribe (`Mi Nota` → `Mi Nota`).
+  `sanitize_title` solo limpia lo que el sistema de archivos no admite (`/`,
+  prefijos `_`/`.`, espacios o puntos finales). Único por cuaderno: una colisión
+  suma `-2`, `-3`.
 - **Cuerpo**: contenido de `note.md`. Texto plano, sin frontmatter.
 - **Tab**: nota abierta en la barra del editor, en orden de apertura. Las tabs son
   globales: cambiar de cuaderno no las cierra.

@@ -12,7 +12,7 @@ const NOTE_TMP: &str = "note.md.tmp";
 const NOTEBOOK_MARKER: &str = ".notebook";
 const TRASH_DIR: &str = "_trash";
 const FALLBACK_TITLE: &str = "sin-titulo";
-const SLUG_MAX: usize = 80;
+const TITLE_MAX_BYTES: usize = 200;
 
 #[derive(Clone)]
 pub struct Note {
@@ -139,7 +139,7 @@ pub fn create(data_dir: &Path, notebook: &str) -> io::Result<Note> {
 /// Crea un cuaderno vacío con su marcador. Devuelve el nombre final (puede sumar sufijo).
 pub fn create_notebook(data_dir: &Path, title: &str) -> io::Result<String> {
     fs::create_dir_all(data_dir)?;
-    let name = unique_name(data_dir, &slugify(title), None);
+    let name = unique_name(data_dir, &sanitize_title(title), None);
     let dir = data_dir.join(&name);
     fs::create_dir(&dir)?;
     fs::write(dir.join(NOTEBOOK_MARKER), "")?;
@@ -148,45 +148,45 @@ pub fn create_notebook(data_dir: &Path, title: &str) -> io::Result<String> {
 
 /// Renombra la carpeta del cuaderno. Devuelve el nombre final.
 pub fn rename_notebook(data_dir: &Path, current: &str, title: &str) -> io::Result<String> {
-    let slug = slugify(title);
-    if current == slug {
-        return Ok(slug);
+    let name = sanitize_title(title);
+    if current == name {
+        return Ok(name);
     }
     let current_dir = data_dir.join(current);
-    let target = data_dir.join(unique_name(data_dir, &slug, Some(&current_dir)));
+    let target = data_dir.join(unique_name(data_dir, &name, Some(&current_dir)));
     fs::rename(current_dir, &target)?;
     Ok(title_of(&target))
 }
 
-/// Escribe el cuerpo de forma atómica y, si el slug del título cambia el nombre,
-/// renombra la carpeta. Devuelve la nota ya releída, con título y mtime finales.
+/// Escribe el cuerpo de forma atómica y, si el título cambia el nombre de la
+/// carpeta, la renombra. Devuelve la nota ya releída, con título y mtime finales.
 pub fn save(current_dir: &Path, title: &str, body: &str) -> io::Result<Note> {
     write_atomic(current_dir, body)?;
 
-    let slug = slugify(title);
+    let title = sanitize_title(title);
     if current_dir
         .file_name()
-        .is_some_and(|name| name == slug.as_str())
+        .is_some_and(|name| name == title.as_str())
     {
         return read(current_dir);
     }
     let parent = parent_of(current_dir)?;
-    let target = parent.join(unique_name(parent, &slug, Some(current_dir)));
+    let target = parent.join(unique_name(parent, &title, Some(current_dir)));
     fs::rename(current_dir, &target)?;
     read(&target)
 }
 
-/// Renombra la carpeta según el slug del título, sin tocar `note.md`.
+/// Renombra la carpeta según el título, sin tocar `note.md`.
 pub fn rename(current_dir: &Path, title: &str) -> io::Result<Note> {
-    let slug = slugify(title);
+    let title = sanitize_title(title);
     if current_dir
         .file_name()
-        .is_some_and(|name| name == slug.as_str())
+        .is_some_and(|name| name == title.as_str())
     {
         return read(current_dir);
     }
     let parent = parent_of(current_dir)?;
-    let target = parent.join(unique_name(parent, &slug, Some(current_dir)));
+    let target = parent.join(unique_name(parent, &title, Some(current_dir)));
     fs::rename(current_dir, &target)?;
     read(&target)
 }
@@ -261,24 +261,27 @@ pub fn fold(s: &str) -> String {
         .collect()
 }
 
-/// Slug del título: `[a-z0-9-]`, guiones colapsados y recortados, máximo 80.
-pub fn slugify(title: &str) -> String {
+/// Título exacto como nombre de carpeta: conserva lo escrito salvo lo que el
+/// sistema de archivos no admite. Descarta prefijos reservados (`_`, `.`) y
+/// recorta a 200 bytes para dejar lugar al sufijo de colisión.
+pub fn sanitize_title(title: &str) -> String {
     let mut out = String::new();
-    for c in fold(title).chars() {
-        if c.is_ascii_lowercase() || c.is_ascii_digit() {
-            out.push(c);
-        } else if !out.is_empty() && !out.ends_with('-') {
-            out.push('-');
+    for c in title.trim().trim_start_matches(['.', '_']).chars() {
+        let c = if matches!(c, '/' | '\\' | '\0') {
+            '-'
+        } else {
+            c
+        };
+        if out.len() + c.len_utf8() > TITLE_MAX_BYTES {
+            break;
         }
+        out.push(c);
     }
-    let mut slug: String = out.trim_end_matches('-').chars().take(SLUG_MAX).collect();
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    if slug.is_empty() {
+    let out = out.trim_end_matches([' ', '.']);
+    if out.is_empty() {
         FALLBACK_TITLE.to_string()
     } else {
-        slug
+        out.to_string()
     }
 }
 
@@ -379,28 +382,30 @@ mod tests {
     }
 
     #[test]
-    fn slugify_reglas() {
-        assert_eq!(slugify("Hola Mundo"), "hola-mundo");
-        assert_eq!(slugify("Canción de Otoño"), "cancion-de-otono");
-        assert_eq!(slugify("ÁÉÍÓÚ Ü Ñ"), "aeiou-u-n");
-        assert_eq!(slugify("  ¡Hola, mundo!  "), "hola-mundo");
-        assert_eq!(slugify("a---b"), "a-b");
-        assert_eq!(slugify("-a-"), "a");
-        assert_eq!(slugify(""), "sin-titulo");
-        assert_eq!(slugify("!!! ??? ..."), "sin-titulo");
-        assert_eq!(slugify("nota_2026.md"), "nota-2026-md");
-        assert_eq!(slugify("ÑANDÚ"), "nandu");
+    fn sanitize_title_conserva_lo_escrito() {
+        assert_eq!(sanitize_title("nota nueva #1"), "nota nueva #1");
+        assert_eq!(sanitize_title("Comprar Café"), "Comprar Café");
+        assert_eq!(sanitize_title("¡Ojo! ¿Qué?"), "¡Ojo! ¿Qué?");
+        assert_eq!(sanitize_title("!nota"), "!nota");
+        assert_eq!(sanitize_title("a---b"), "a---b");
+        assert_eq!(sanitize_title("nota_2026.md"), "nota_2026.md");
+        assert_eq!(sanitize_title("  hola  "), "hola");
+        assert_eq!(sanitize_title("a/b\\c"), "a-b-c");
+        assert_eq!(sanitize_title("_oculta"), "oculta");
+        assert_eq!(sanitize_title("nota."), "nota");
+        assert_eq!(sanitize_title(""), "sin-titulo");
+        assert_eq!(sanitize_title("..."), "sin-titulo");
+        assert_eq!(sanitize_title("emoji 🚀"), "emoji 🚀");
     }
 
     #[test]
-    fn slugify_trunca_a_80_sin_guion_final() {
-        let largo = "abc ".repeat(40);
-        let slug = slugify(&largo);
-        assert_eq!(slug.len(), 79);
-        assert!(!slug.ends_with('-'));
+    fn sanitize_title_recorta_a_200_bytes_sin_partir_un_char() {
+        let title = sanitize_title(&"á".repeat(150));
+        assert_eq!(title.len(), TITLE_MAX_BYTES);
+        assert_eq!(title.chars().count(), TITLE_MAX_BYTES / 2);
 
         let justo = "a".repeat(200);
-        assert_eq!(slugify(&justo).len(), SLUG_MAX);
+        assert_eq!(sanitize_title(&justo).len(), TITLE_MAX_BYTES);
     }
 
     #[test]
@@ -415,14 +420,14 @@ mod tests {
         assert_eq!(body_of(&note.dir), "");
 
         let dir = save(&note.dir, "Mi Nota", "hola\nmundo").unwrap();
-        assert_eq!(dir.dir.file_name().unwrap(), "mi-nota");
-        assert_eq!(dir.title, "mi-nota");
+        assert_eq!(dir.dir.file_name().unwrap(), "Mi Nota");
+        assert_eq!(dir.title, "Mi Nota");
         assert_eq!(dir.body, "hola\nmundo");
         assert!(!note.dir.exists());
 
         let leida = read(&dir.dir).unwrap();
         assert_eq!(leida.notebook, "general");
-        assert_eq!(leida.title, "mi-nota");
+        assert_eq!(leida.title, "Mi Nota");
         assert_eq!(leida.body, "hola\nmundo");
         assert_eq!(leida.dir, dir.dir);
         assert_ne!(leida.mtime, UNIX_EPOCH);
@@ -483,15 +488,15 @@ mod tests {
         let b = save(&b.dir, "segunda", "dos").unwrap();
 
         let movida = rename(&a.dir, "Comprar Café").unwrap();
-        assert_eq!(movida.dir.file_name().unwrap(), "comprar-cafe");
+        assert_eq!(movida.dir.file_name().unwrap(), "Comprar Café");
         assert!(!a.dir.exists());
         assert_eq!(body_of(&movida.dir), "uno");
 
-        let otra = rename(&b.dir, "comprar cafe").unwrap();
-        assert_eq!(otra.dir.file_name().unwrap(), "comprar-cafe-2");
+        let otra = rename(&b.dir, "Comprar Café").unwrap();
+        assert_eq!(otra.dir.file_name().unwrap(), "Comprar Café-2");
         assert_eq!(body_of(&otra.dir), "dos");
 
-        assert_eq!(rename(&otra.dir, "comprar cafe").unwrap().dir, otra.dir);
+        assert_eq!(rename(&otra.dir, "Comprar Café").unwrap().dir, otra.dir);
     }
 
     #[test]
@@ -557,10 +562,10 @@ mod tests {
         let data = tmp.path();
 
         let first = create_notebook(data, "Mi Cuaderno").unwrap();
-        let second = create_notebook(data, "mi cuaderno").unwrap();
+        let second = create_notebook(data, "Mi Cuaderno").unwrap();
 
-        assert_eq!(first, "mi-cuaderno");
-        assert_eq!(second, "mi-cuaderno-2");
+        assert_eq!(first, "Mi Cuaderno");
+        assert_eq!(second, "Mi Cuaderno-2");
         assert!(data.join(&first).join(NOTEBOOK_MARKER).is_file());
         assert_eq!(discover_notebooks(data), [first, second]);
     }
@@ -574,13 +579,13 @@ mod tests {
 
         let renamed = rename_notebook(data, &notebook, "Personal").unwrap();
 
-        assert_eq!(renamed, "personal");
+        assert_eq!(renamed, "Personal");
         assert!(!data.join(&notebook).exists());
         assert!(data.join(&renamed).join(NOTEBOOK_MARKER).is_file());
         assert_eq!(body_of(&data.join(&renamed).join("nota")), "cuerpo");
         assert_eq!(
             read(&data.join(&renamed).join("nota")).unwrap().notebook,
-            "personal"
+            "Personal"
         );
     }
 

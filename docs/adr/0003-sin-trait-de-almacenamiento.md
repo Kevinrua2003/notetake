@@ -13,7 +13,7 @@ testear `workspace` sin tocar disco.
 ## Razón
 
 Un solo adapter (el sistema de archivos) es un seam hipotético. El fake tendría que
-reimplementar rename, colisiones de slug, escritura atómica y mtimes: justo la
+reimplementar rename, colisiones de título, escritura atómica y mtimes: justo la
 semántica que hay que probar. Un test contra el fake no diría nada sobre el disco.
 
 ## Consecuencias

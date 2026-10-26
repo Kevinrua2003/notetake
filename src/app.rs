@@ -2020,14 +2020,14 @@ mod ui_tests {
         h.key_press(egui::Key::Enter);
         h.run();
 
-        assert!(tmp.path().join("general/comprar-pan/note.md").is_file());
+        assert!(tmp.path().join("general/comprar pan/note.md").is_file());
         assert_eq!(
-            std::fs::read_to_string(tmp.path().join("general/comprar-pan/note.md")).unwrap(),
+            std::fs::read_to_string(tmp.path().join("general/comprar pan/note.md")).unwrap(),
             "cuerpo\n",
             "renombrar no debe reescribir el cuerpo"
         );
         assert!(h.state().workspace.editing().is_none());
-        assert_eq!(titles(h.state()), ["comprar-pan"]);
+        assert_eq!(titles(h.state()), ["comprar pan"]);
     }
 
     #[test]
@@ -2197,7 +2197,7 @@ mod ui_tests {
         h.key_press(egui::Key::Enter);
         h.run();
 
-        assert!(tmp.path().join("general/mi-nota/note.md").is_file());
+        assert!(tmp.path().join("general/mi nota/note.md").is_file());
         assert!(!tmp.path().join("general/sin-titulo").exists());
     }
 
@@ -2505,15 +2505,15 @@ mod ui_tests {
             .click();
         h.run();
 
-        assert!(tmp.path().join("personal/.notebook").is_file());
-        assert_eq!(h.state().notebook.as_deref(), Some("personal"));
+        assert!(tmp.path().join("Personal/.notebook").is_file());
+        assert_eq!(h.state().notebook.as_deref(), Some("Personal"));
 
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
         h.run();
         assert_eq!(
             h.state()
                 .workspace
-                .visible(Order::Alphabetical, "", "personal")
+                .visible(Order::Alphabetical, "", "Personal")
                 .len(),
             1,
             "Ctrl+N debería crear la nota en el cuaderno elegido"

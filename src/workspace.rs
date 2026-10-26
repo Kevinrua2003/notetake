@@ -221,7 +221,7 @@ impl Workspace {
             return Ok(());
         };
         let title = title.trim();
-        if title.is_empty() || store::slugify(title) == entry.note.title {
+        if title.is_empty() || store::sanitize_title(title) == entry.note.title {
             return Ok(());
         }
         let dir = entry.note.dir.clone();
@@ -463,9 +463,9 @@ mod tests {
         assert_eq!(ws.active(), Some(id));
         assert!(ws.is_dirty(id), "el renombre no debe limpiar el sucio");
         assert!(ws.editing().is_none());
-        assert_eq!(ws.note(id).unwrap().title, "comprar-pan");
+        assert_eq!(ws.note(id).unwrap().title, "comprar pan");
         assert_eq!(ws.note(id).unwrap().body, "cuerpo");
-        assert!(tmp.path().join("general/comprar-pan/note.md").is_file());
+        assert!(tmp.path().join("general/comprar pan/note.md").is_file());
     }
 
     #[test]
@@ -737,12 +737,12 @@ mod tests {
 
         let renamed = ws.rename_notebook("general", "Personal").unwrap();
 
-        assert_eq!(renamed, "personal");
-        assert_eq!(ws.notebooks(), ["personal"]);
+        assert_eq!(renamed, "Personal");
+        assert_eq!(ws.notebooks(), ["Personal"]);
         assert_eq!(ws.tabs(), &[id]);
         let note = ws.note(id).unwrap();
-        assert_eq!(note.notebook, "personal");
-        assert_eq!(note.dir, tmp.path().join("personal/sin-titulo"));
+        assert_eq!(note.notebook, "Personal");
+        assert_eq!(note.dir, tmp.path().join("Personal/sin-titulo"));
         assert!(note.dir.join("note.md").is_file());
     }
 
