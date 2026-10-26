@@ -1,6 +1,6 @@
 [package]
 name = "notetake"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Kevin Rua"]
@@ -14,9 +14,11 @@ eframe = { version = "0.37", default-features = false, features = [
     "wayland",
     "x11",
     "accesskit",
+    "clipboard",
     "default_fonts",
     "persistence",
 ] }
+arboard = "3"
 serde = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 ureq = "3.5.0"

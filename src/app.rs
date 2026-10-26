@@ -1139,6 +1139,20 @@ impl App {
                             if row.clicked() {
                                 open = Some(idx);
                             }
+                            row.container_context_menu(|ui| {
+                                if ui.button("Abrir").clicked() {
+                                    open = Some(idx);
+                                    ui.close();
+                                }
+                                if ui.button("Renombrar").clicked() {
+                                    pencil = Some(idx);
+                                    ui.close();
+                                }
+                                if ui.button("Mover a papelera").clicked() {
+                                    delete = Some(idx);
+                                    ui.close();
+                                }
+                            });
                         }
 
                         if visibles == 0 {
@@ -1203,6 +1217,17 @@ impl App {
 
             let width = style::READING_WIDTH.min(ui.available_width() - 16.0);
             ui.add_space(18.0);
+            let editor_id = egui::Id::unique("cuerpo-editor");
+            let menu_key = editor_id.with("seleccion-menu");
+            // egui colapsa la selección al presionar el botón secundario: la
+            // guardamos antes de que el TextEdit procese el click.
+            if ui.input(|input| input.pointer.secondary_pressed())
+                && let Some(state) = egui::TextEdit::load_state(ui.ctx(), editor_id)
+            {
+                let selection = state.cursor.char_range().filter(|range| !range.is_empty());
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(menu_key, selection));
+            }
             // El TextEdit crece con el contenido; el ScrollArea se encarga del resto.
             egui::ScrollArea::vertical()
                 .id_salt("cuerpo")
@@ -1216,6 +1241,7 @@ impl App {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                         let body = ui.add(
                             egui::TextEdit::multiline(&mut self.notes[idx].body)
+                                .id(editor_id)
                                 .desired_rows(rows)
                                 .hint_text("Escribí acá…")
                                 .font(egui::TextStyle::Name("editor".into()))
@@ -1225,6 +1251,9 @@ impl App {
                                 .desired_width(width),
                         );
                         if body.changed() {
+                            self.mark_dirty(idx);
+                        }
+                        if editor_context_menu(&body, &mut self.notes[idx].body, menu_key) {
                             self.mark_dirty(idx);
                         }
                         ui.add_space(32.0);
@@ -1461,6 +1490,90 @@ fn title_job(
     job
 }
 
+/// Menú contextual del editor. Devuelve `true` si el cuerpo cambió.
+fn editor_context_menu(response: &egui::Response, body: &mut String, menu_key: egui::Id) -> bool {
+    use egui::TextBuffer as _;
+
+    let mut changed = false;
+    let mut acted = false;
+
+    response.context_menu(|ui| {
+        let ctx = ui.ctx().clone();
+        let id = response.id;
+        let selection = ctx
+            .data(|data| data.get_temp::<Option<egui::text_selection::CCursorRange>>(menu_key))
+            .flatten();
+
+        let Some(mut state) = egui::TextEdit::load_state(&ctx, id) else {
+            return;
+        };
+        let cursor = state.cursor.char_range().unwrap_or_default();
+
+        if ui
+            .add_enabled(selection.is_some(), egui::Button::new("Cortar"))
+            .clicked()
+            && let Some(selection) = selection
+        {
+            ctx.copy_text(selection.slice_str(body).to_owned());
+            let cursor = body.delete_selected(&selection);
+            state
+                .cursor
+                .set_char_range(Some(egui::text_selection::CCursorRange::one(cursor)));
+            changed = true;
+            acted = true;
+        }
+
+        if ui
+            .add_enabled(selection.is_some(), egui::Button::new("Copiar"))
+            .clicked()
+            && let Some(selection) = selection
+        {
+            ctx.copy_text(selection.slice_str(body).to_owned());
+            state.cursor.set_char_range(Some(selection));
+            acted = true;
+        }
+
+        if ui.button("Pegar").clicked()
+            && let Some(text) = pasted_text()
+        {
+            let mut cursor = body.delete_selected(&selection.unwrap_or(cursor));
+            body.insert_text_at(&mut cursor, &text, usize::MAX);
+            state
+                .cursor
+                .set_char_range(Some(egui::text_selection::CCursorRange::one(cursor)));
+            changed = true;
+            acted = true;
+        }
+
+        if ui.button("Seleccionar todo").clicked() {
+            state
+                .cursor
+                .set_char_range(Some(egui::text_selection::CCursorRange::select_all_str(
+                    body,
+                )));
+            acted = true;
+        }
+
+        if acted {
+            state.store(&ctx, id);
+            ui.close();
+        }
+    });
+
+    if acted {
+        response.request_focus();
+    }
+    changed
+}
+
+fn pasted_text() -> Option<String> {
+    arboard::Clipboard::new()
+        .ok()?
+        .get_text()
+        .ok()
+        .filter(|text| !text.is_empty())
+}
+
 /// Primeras dos líneas del cuerpo, con espacios colapsados, recortadas para la fila.
 fn snippet(body: &str) -> String {
     let text = body
@@ -1644,6 +1757,19 @@ mod ui_tests {
         harness.hover_at(pos);
         harness.drag_at(pos);
         harness.drop_at(pos);
+        harness.run();
+    }
+
+    fn right_click(harness: &mut Harness<'static, App>, pos: Pos2) {
+        harness.hover_at(pos);
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
         harness.run();
     }
 
@@ -1965,6 +2091,44 @@ mod ui_tests {
         h.run();
 
         assert!(h.query_by_label("Sin resultados para «zzz».").is_some());
+    }
+
+    #[test]
+    fn menu_contextual_del_editor_corta_la_seleccion() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\ndos\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click();
+        h.run();
+        let editor = Pos2::new(600.0, 300.0);
+        click(&mut h, editor);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run();
+
+        right_click(&mut h, editor);
+        h.get_by_label("Cortar").click();
+        h.run();
+
+        assert!(
+            h.state().notes[0].body.is_empty(),
+            "cortar debería vaciar la selección completa"
+        );
+        assert!(h.state().is_dirty(0), "cortar debería marcar la nota sucia");
+    }
+
+    #[test]
+    fn menu_contextual_de_la_lista_abre_la_nota() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click_secondary();
+        h.run();
+        h.get_by_label("Abrir").click();
+        h.run();
+
+        assert_eq!(h.state().tabs.len(), 1, "el menú debería abrir la nota");
     }
 
     #[test]

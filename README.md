@@ -30,6 +30,7 @@ en el margen izquierdo; en el modal, «Guardar» es la acción primaria.
 | `Ctrl+N` | Nueva nota y renombre inline de la fila |
 | `Ctrl+S` | Guardar el cuerpo de la nota abierta |
 | `Ctrl+F` | Foco al buscador |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copiar, cortar y pegar texto |
 | `Esc` | Cancela el renombre inline; si no hay, limpia la búsqueda |
 | `Ctrl+W` | Cerrar el tab actual |
 
@@ -37,6 +38,9 @@ Click en una nota de la lista la abre en un tab. El lápiz de la fila renombra
 inline (`Enter` confirma, `Esc` cancela, perder foco confirma) y el renombre se
 aplica en disco al instante. El `×` de la fila aparece al pasar el mouse y manda
 la nota a `_trash/`.
+
+Click derecho abre un menú contextual: en el editor, Cortar / Copiar / Pegar /
+Seleccionar todo; en una fila de la lista, Abrir / Renombrar / Mover a papelera.
 
 Si hay cambios sin guardar, al cerrar el tab (o la ventana) aparece un modal
 Guardar / Descartar / Cancelar.
@@ -75,7 +79,7 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 12 de storage + 16 de UI + 3 de actualizaciones + 1 de contraste
+cargo test            # 12 de storage + 18 de UI + 3 de actualizaciones + 1 de contraste
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
@@ -86,8 +90,8 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
   atómico (`note.md.tmp` + `rename`), renombrar, mover a `_trash`, slug y fold
   de acentos.
 - `src/app.rs` — estado y UI egui: barra de título propia, ajustes (tema, orden
-  y carpetas), lista, búsqueda, tabs, renombre inline, modal y rescan al
-  recuperar foco.
+  y carpetas), lista, búsqueda, tabs, renombre inline, menús contextuales, modal
+  y rescan al recuperar foco.
 - `src/update.rs` — chequeo e instalación desde GitHub Releases (solo Linux).
 - `src/main.rs` — arranque, resolución del data dir, ventana e icono.
 - `assets/icon.png` — icono de la app (512 px, esquinas redondeadas).
