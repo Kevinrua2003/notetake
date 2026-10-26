@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "notetake"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arboard",
  "eframe",

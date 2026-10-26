@@ -76,7 +76,7 @@ pub(crate) fn snippet(body: &str) -> String {
 pub(crate) enum Icon {
     Menu,
     Plus,
-    Pencil,
+    More,
     Close,
     Minimize,
     Maximize,
@@ -195,19 +195,14 @@ pub(crate) fn paint_icon(
                 stroke,
             );
         }
-        Icon::Pencil => {
-            let start = center + egui::vec2(-s * 0.28, s * 0.28);
-            let end = center + egui::vec2(s * 0.26, -s * 0.26);
-            painter.line_segment([start, end], egui::Stroke::new(2.0, color));
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    start + egui::vec2(-s * 0.07, -s * 0.01),
-                    start + egui::vec2(s * 0.01, s * 0.07),
-                    start + egui::vec2(-s * 0.10, s * 0.10),
-                ],
-                color,
-                egui::Stroke::NONE,
-            ));
+        Icon::More => {
+            for i in -1..=1 {
+                painter.circle_filled(
+                    center + egui::vec2(0.0, i as f32 * s * 0.19),
+                    s * 0.075,
+                    color,
+                );
+            }
         }
     }
 }

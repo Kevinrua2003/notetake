@@ -790,7 +790,7 @@ impl App {
     fn notes_panel(&mut self, ui: &mut egui::Ui) {
         let mut open = None;
         let mut delete = None;
-        let mut pencil = None;
+        let mut rename = None;
         let mut move_to = None;
         let mut select = None;
         let mut create_notebook = false;
@@ -959,17 +959,48 @@ impl App {
                                                 });
                                             },
                                             |ui| {
-                                                if icon_button(
+                                                let response = icon_button(
                                                     ui,
-                                                    Icon::Pencil,
+                                                    Icon::More,
                                                     20.0,
-                                                    "Renombrar",
+                                                    "Más acciones",
                                                     false,
-                                                )
-                                                .clicked()
-                                                {
-                                                    pencil = Some(id);
+                                                );
+                                                if egui::Popup::is_id_open(
+                                                    ui.ctx(),
+                                                    egui::Popup::default_response_id(&response),
+                                                ) {
+                                                    ui.painter().rect_filled(
+                                                        response.rect,
+                                                        4.0,
+                                                        ui.visuals().widgets.hovered.weak_bg_fill,
+                                                    );
+                                                    paint_icon(
+                                                        ui.painter(),
+                                                        Icon::More,
+                                                        response.rect,
+                                                        ui.visuals().strong_text_color(),
+                                                    );
                                                 }
+                                                egui::Popup::menu(&response).show(|ui| {
+                                                    match note_menu(
+                                                        ui,
+                                                        &note_notebook,
+                                                        self.workspace.notebooks(),
+                                                    ) {
+                                                        Some(NoteAction::Open) => open = Some(id),
+                                                        Some(NoteAction::Rename) => {
+                                                            rename = Some(id)
+                                                        }
+                                                        Some(NoteAction::MoveTo(name)) => {
+                                                            move_to = Some((id, name))
+                                                        }
+                                                        Some(NoteAction::Delete) => {
+                                                            delete = Some(id)
+                                                        }
+                                                        None => {}
+                                                    }
+                                                });
                                                 if show_close {
                                                     if icon_button(
                                                         ui,
@@ -983,7 +1014,7 @@ impl App {
                                                         delete = Some(id);
                                                     }
                                                 } else {
-                                                    // Reserva el lugar del `×` para que el lápiz no salte.
+                                                    // Reserva el lugar del `×` para que los 3 puntos no salten.
                                                     ui.add_space(20.0);
                                                 }
                                             },
@@ -1019,28 +1050,12 @@ impl App {
                                 open = Some(id);
                             }
                             row.container_context_menu(|ui| {
-                                if ui.button("Abrir").clicked() {
-                                    open = Some(id);
-                                    ui.close();
-                                }
-                                if ui.button("Renombrar").clicked() {
-                                    pencil = Some(id);
-                                    ui.close();
-                                }
-                                if self.workspace.notebooks().len() > 1 {
-                                    ui.menu_button("Mover a cuaderno", |ui| {
-                                        for other in self.workspace.notebooks() {
-                                            if other != &note_notebook && ui.button(other).clicked()
-                                            {
-                                                move_to = Some((id, other.clone()));
-                                                ui.close();
-                                            }
-                                        }
-                                    });
-                                }
-                                if ui.button("Mover a papelera").clicked() {
-                                    delete = Some(id);
-                                    ui.close();
+                                match note_menu(ui, &note_notebook, self.workspace.notebooks()) {
+                                    Some(NoteAction::Open) => open = Some(id),
+                                    Some(NoteAction::Rename) => rename = Some(id),
+                                    Some(NoteAction::MoveTo(name)) => move_to = Some((id, name)),
+                                    Some(NoteAction::Delete) => delete = Some(id),
+                                    None => {}
                                 }
                             });
                         }
@@ -1098,7 +1113,7 @@ impl App {
         if create_notebook {
             self.request_create_notebook();
         }
-        if let Some(id) = pencil {
+        if let Some(id) = rename {
             self.commit_rename();
             self.start_rename(id);
         } else if commit {
@@ -1685,6 +1700,41 @@ fn open_folder(path: &Path) -> std::io::Result<()> {
     }
 }
 
+enum NoteAction {
+    Open,
+    Rename,
+    MoveTo(String),
+    Delete,
+}
+
+/// Opciones de una nota, compartidas por el click derecho y el botón de 3 puntos.
+fn note_menu(ui: &mut egui::Ui, notebook: &str, notebooks: &[String]) -> Option<NoteAction> {
+    let mut action = None;
+    if ui.button("Abrir").clicked() {
+        action = Some(NoteAction::Open);
+    }
+    if ui.button("Renombrar").clicked() {
+        action = Some(NoteAction::Rename);
+    }
+    if notebooks.len() > 1 {
+        ui.menu_button("Mover a cuaderno", |ui| {
+            for other in notebooks {
+                if other != notebook && ui.button(other).clicked() {
+                    action = Some(NoteAction::MoveTo(other.clone()));
+                    ui.close();
+                }
+            }
+        });
+    }
+    if ui.button("Mover a papelera").clicked() {
+        action = Some(NoteAction::Delete);
+    }
+    if action.is_some() {
+        ui.close();
+    }
+    action
+}
+
 /// Menú contextual del editor. Devuelve `true` si el cuerpo cambió.
 fn editor_context_menu(response: &egui::Response, body: &mut String, menu_key: egui::Id) -> bool {
     use egui::TextBuffer as _;
@@ -1959,6 +2009,8 @@ mod ui_tests {
         seed(tmp.path(), &[("sin-titulo", "cuerpo\n")]);
         let mut h = harness(tmp.path());
 
+        h.get_by_label("Más acciones").click();
+        h.run();
         h.get_by_label("Renombrar").click();
         h.run();
         assert_eq!(h.state().workspace.editing(), Some(only_id(h.state())));
@@ -2081,6 +2133,8 @@ mod ui_tests {
         seed(tmp.path(), &[("nota-a", "")]);
         let mut h = harness(tmp.path());
 
+        h.get_by_label("Más acciones").click();
+        h.run();
         h.get_by_label("Renombrar").click();
         h.run();
         h.event(egui::Event::Text("otro".to_owned()));
@@ -2106,6 +2160,8 @@ mod ui_tests {
         h.run();
         assert!(h.state().workspace.is_dirty(only_id(h.state())));
 
+        h.get_by_label("Más acciones").click();
+        h.run();
         h.get_by_label("Renombrar").click();
         h.run();
         h.event(egui::Event::Text("nueva".to_owned()));
@@ -2372,6 +2428,23 @@ mod ui_tests {
             1,
             "el menú debería abrir la nota"
         );
+    }
+
+    #[test]
+    fn menu_de_tres_puntos_despliega_las_acciones() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("Más acciones").click();
+        h.run();
+
+        for label in ["Abrir", "Renombrar", "Mover a papelera"] {
+            assert!(
+                h.query_by_label(label).is_some(),
+                "el menú debería ofrecer {label}"
+            );
+        }
     }
 
     #[test]
@@ -2642,8 +2715,10 @@ mod ui_tests {
             .save(std::env::temp_dir().join("kt-dirty.png"))
             .unwrap();
 
-        let primero = h.get_all_by_label("Renombrar").next().unwrap();
+        let primero = h.get_all_by_label("Más acciones").next().unwrap();
         primero.click();
+        h.run();
+        h.get_by_label("Renombrar").click();
         h.run();
         let editando = h.render().expect("render wgpu");
         editando
