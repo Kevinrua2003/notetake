@@ -1,13 +1,15 @@
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use eframe::egui;
 
-use crate::store::{self, Note};
+use crate::closing::{Action, Closing, Intent};
+use crate::store;
 use crate::style;
+use crate::ui::{Icon, accent_button, icon_button, paint_icon, snippet, title_job};
 use crate::update::{self, InstallKind};
+use crate::workspace::{NoteId, Order, Workspace};
 
 /// Clave usada en el storage de eframe.
 const STORAGE_KEY: &str = "notetake";
@@ -51,32 +53,6 @@ impl Theme {
             Self::Dark => egui::ThemePreference::Dark,
         }
     }
-}
-
-/// Orden de la lista de notas.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-enum Order {
-    #[default]
-    Alphabetical,
-    Recent,
-}
-
-impl Order {
-    const ALL: [Self; 2] = [Self::Alphabetical, Self::Recent];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Alphabetical => "Alfabético",
-            Self::Recent => "Reciente",
-        }
-    }
-}
-
-/// Acción de cierre que quedó esperando resolución del modal.
-#[derive(Clone, Copy)]
-enum CloseTarget {
-    Tab(usize),
-    Window(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -132,20 +108,13 @@ enum UpdateAction {
 }
 
 pub struct App {
-    data_dir: PathBuf,
-    /// Orden de carga, nunca se reordena: los índices de `tabs` apuntan acá.
-    notes: Vec<Note>,
-    tabs: Vec<usize>,
-    active: usize,
+    workspace: Workspace,
     search: String,
-    /// Carpetas con cambios sin guardar (por `dir`, que cambia al renombrar).
-    dirty: HashSet<PathBuf>,
     error: Option<String>,
-    hovered_row: Option<usize>,
-    hovered_tab: Option<usize>,
+    hovered_row: Option<NoteId>,
+    hovered_tab: Option<NoteId>,
     focus_search: bool,
-    /// Nota cuya fila de la lista está en edición inline.
-    renaming: Option<usize>,
+    /// Texto del renombre inline; el id en edición vive en el workspace.
     rename_text: String,
     rename_focus: bool,
     theme: Theme,
@@ -155,16 +124,13 @@ pub struct App {
     /// Momento del último guardado, para el destello del tab.
     saved_flash: Option<std::time::Instant>,
     maximized: bool,
-    pending: Option<CloseTarget>,
-    close_now: bool,
+    closing: Closing,
     was_focused: bool,
     update: UpdateState,
     /// El modal de actualizaciones está abierto.
     update_modal: bool,
     /// Detectado una vez: `cargo run` no se puede reemplazar solo.
     install_kind: InstallKind,
-    /// Hay que relanzar el binario nuevo cuando termine el cierre.
-    restart: bool,
 }
 
 impl App {
@@ -188,17 +154,12 @@ impl App {
 
     fn load(data_dir: PathBuf) -> Self {
         Self {
-            notes: store::discover(&data_dir),
-            data_dir,
-            tabs: Vec::new(),
-            active: 0,
+            workspace: Workspace::load(data_dir),
             search: String::new(),
-            dirty: HashSet::new(),
             error: None,
             hovered_row: None,
             hovered_tab: None,
             focus_search: false,
-            renaming: None,
             rename_text: String::new(),
             rename_focus: false,
             theme: Theme::default(),
@@ -206,160 +167,61 @@ impl App {
             applied_theme: None,
             saved_flash: None,
             maximized: false,
-            pending: None,
-            close_now: false,
+            closing: Closing::Idle,
             was_focused: true,
             update: UpdateState::Idle,
             update_modal: false,
             install_kind: update::install_kind(),
-            restart: false,
         }
     }
 
     fn restore(&mut self, persisted: Persisted) {
         self.theme = persisted.theme;
         self.order = persisted.order;
-        for title in persisted.tabs {
-            if let Some(idx) = self.notes.iter().position(|note| note.title == title)
-                && !self.tabs.contains(&idx)
-            {
-                self.tabs.push(idx);
-            }
-        }
-
-        self.active = persisted
-            .active
-            .and_then(|title| self.notes.iter().position(|note| note.title == title))
-            .and_then(|idx| self.tabs.iter().position(|&tab| tab == idx))
-            .unwrap_or(0);
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len().saturating_sub(1);
-        }
+        self.workspace.restore(persisted.tabs, persisted.active);
     }
 
-    fn active_note(&self) -> Option<usize> {
-        let &idx = self.tabs.get(self.active)?;
-        (idx < self.notes.len()).then_some(idx)
-    }
-
-    fn is_dirty(&self, idx: usize) -> bool {
-        self.notes
-            .get(idx)
-            .is_some_and(|note| self.dirty.contains(&note.dir))
-    }
-
-    fn mark_dirty(&mut self, idx: usize) {
-        if let Some(note) = self.notes.get(idx) {
-            self.dirty.insert(note.dir.clone());
-        }
-    }
-
-    fn clear_dirty(&mut self, idx: usize) {
-        if let Some(note) = self.notes.get(idx) {
-            self.dirty.remove(&note.dir);
-        }
-    }
-
-    fn next_dirty_tab(&self) -> Option<usize> {
-        self.tabs.iter().copied().find(|&idx| self.is_dirty(idx))
-    }
-
-    fn open_tab(&mut self, idx: usize) {
-        match self.tabs.iter().position(|&tab| tab == idx) {
-            Some(pos) => self.active = pos,
-            None => {
-                self.tabs.push(idx);
-                self.active = self.tabs.len() - 1;
-            }
-        }
-    }
-
-    fn close_tab(&mut self, note_idx: usize) {
-        if let Some(pos) = self.tabs.iter().position(|&tab| tab == note_idx) {
-            self.tabs.remove(pos);
-            if pos < self.active {
-                self.active -= 1;
-            }
-        }
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len().saturating_sub(1);
-        }
-    }
-
-    fn request_close_tab(&mut self, note_idx: usize) {
-        if self.is_dirty(note_idx) {
-            self.pending = Some(CloseTarget::Tab(note_idx));
+    fn request_close_tab(&mut self, id: NoteId) {
+        if self.workspace.is_dirty(id) {
+            self.closing.ask(id, Intent::Tab);
         } else {
-            self.close_tab(note_idx);
+            self.workspace.close(id);
         }
     }
 
     fn new_note(&mut self) {
         self.commit_rename();
-        match store::create(&self.data_dir) {
-            Ok(note) => {
-                self.notes.push(note);
-                let idx = self.notes.len() - 1;
-                self.open_tab(idx);
-                self.start_rename(idx);
+        match self.workspace.create() {
+            Ok(id) => {
+                self.workspace.open(id);
+                self.start_rename(id);
                 self.error = None;
             }
             Err(err) => self.error = Some(format!("No se pudo crear la nota: {err}")),
         }
     }
 
-    fn start_rename(&mut self, idx: usize) {
-        let Some(note) = self.notes.get(idx) else {
-            return;
-        };
-        self.renaming = Some(idx);
-        self.rename_text = note.title.clone();
+    fn start_rename(&mut self, id: NoteId) {
+        self.workspace.start_rename(id);
+        if let Some(note) = self.workspace.note(id) {
+            self.rename_text = note.title.clone();
+        }
         self.rename_focus = true;
     }
 
     /// Confirma el renombre inline. Vacío o sin cambios no hace nada.
     fn commit_rename(&mut self) {
-        let Some(idx) = self.renaming.take() else {
-            return;
-        };
-        let title = self.rename_text.trim().to_owned();
-        self.rename_text.clear();
-        let Some(note) = self.notes.get(idx) else {
-            return;
-        };
-        if title.is_empty() || store::slugify(&title) == note.title {
-            return;
-        }
-
-        let old_dir = note.dir.clone();
-        match store::rename(&self.data_dir, &old_dir, &title) {
-            Ok(dir) => {
-                let title = dir
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let mtime = std::fs::metadata(dir.join("note.md"))
-                    .and_then(|meta| meta.modified())
-                    .unwrap_or_else(|_| SystemTime::now());
-                if let Some(note) = self.notes.get_mut(idx) {
-                    note.dir = dir.clone();
-                    note.title = title;
-                    note.mtime = mtime;
-                }
-                if self.dirty.remove(&old_dir) {
-                    self.dirty.insert(dir);
-                }
-                self.error = None;
-            }
+        let title = std::mem::take(&mut self.rename_text).trim().to_owned();
+        match self.workspace.commit_rename(&title) {
+            Ok(()) => self.error = None,
             Err(err) => self.error = Some(format!("No se pudo renombrar: {err}")),
         }
     }
 
     fn request_close_window(&mut self, ctx: &egui::Context) {
-        if let Some(idx) = self.next_dirty_tab() {
-            self.pending = Some(CloseTarget::Window(idx));
-        } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        match self.workspace.dirty_tab() {
+            Some(id) => self.closing.ask(id, Intent::Window),
+            None => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
 
@@ -368,76 +230,30 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.maximized));
     }
 
-    fn save_note(&mut self, idx: usize) -> Result<(), String> {
-        let note = self.notes.get(idx).ok_or("la nota ya no existe")?;
-        let old_dir = note.dir.clone();
-        let new_dir = store::save(&self.data_dir, &old_dir, &note.title, &note.body)
-            .map_err(|err| err.to_string())?;
-
-        let title = new_dir
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let mtime = std::fs::metadata(new_dir.join("note.md"))
-            .and_then(|meta| meta.modified())
-            .unwrap_or_else(|_| SystemTime::now());
-
-        if let Some(note) = self.notes.get_mut(idx) {
-            note.dir = new_dir;
-            note.title = title;
-            note.mtime = mtime;
-        }
-        self.dirty.remove(&old_dir);
+    fn save_note(&mut self, id: NoteId) -> Result<(), String> {
+        self.workspace.save(id).map_err(|err| err.to_string())?;
         self.saved_flash = Some(std::time::Instant::now());
         Ok(())
     }
 
-    fn save_current(&mut self, idx: usize) {
-        if !self.is_dirty(idx) {
+    fn save_current(&mut self, id: NoteId) {
+        if !self.workspace.is_dirty(id) {
             return;
         }
-        match self.save_note(idx) {
+        match self.save_note(id) {
             Ok(()) => self.error = None,
             Err(err) => self.error = Some(format!("No se pudo guardar: {err}")),
         }
     }
 
-    fn trash_note(&mut self, idx: usize) {
-        let Some(note) = self.notes.get(idx) else {
-            return;
-        };
-        let dir = note.dir.clone();
-        match store::trash(&self.data_dir, &dir) {
-            Ok(()) => self.remove_note(idx),
-            Err(err) => self.error = Some(format!("No se pudo mover a la papelera: {err}")),
-        }
-    }
-
-    fn remove_note(&mut self, idx: usize) {
-        if let Some(pos) = self.tabs.iter().position(|&tab| tab == idx) {
-            self.tabs.remove(pos);
-            if pos < self.active {
-                self.active -= 1;
-            }
-        }
-        if let Some(note) = self.notes.get(idx) {
-            self.dirty.remove(&note.dir);
-        }
-        self.notes.remove(idx);
-        for tab in &mut self.tabs {
-            if *tab > idx {
-                *tab -= 1;
-            }
-        }
-        // Corrige índices viejos que quedaron colgados por la eliminación.
-        self.tabs.retain(|&tab| tab < self.notes.len());
-        if self.active >= self.tabs.len() {
-            self.active = self.tabs.len().saturating_sub(1);
+    fn trash_note(&mut self, id: NoteId) {
+        if let Err(err) = self.workspace.trash(id) {
+            self.error = Some(format!("No se pudo mover a la papelera: {err}"));
         }
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if self.pending.is_some() {
+        if self.closing.is_asking() {
             return;
         }
 
@@ -453,30 +269,30 @@ impl App {
             focus_search = input.consume_key(egui::Modifiers::COMMAND, egui::Key::F);
             close_tab = input.consume_key(egui::Modifiers::COMMAND, egui::Key::W);
             // Con búsqueda vacía el Esc queda para que egui cierre menús y popups.
-            clear_search = (self.renaming.is_some() || !self.search.is_empty())
+            clear_search = (self.workspace.editing().is_some() || !self.search.is_empty())
                 && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
         });
 
         if new_note {
             self.new_note();
         }
-        if save && let Some(idx) = self.active_note() {
-            self.save_current(idx);
+        if save && let Some(id) = self.workspace.active() {
+            self.save_current(id);
         }
         if focus_search {
             self.focus_search = true;
         }
         if clear_search {
-            if self.renaming.is_some() {
+            if self.workspace.editing().is_some() {
                 // Esc cancela la edición inline antes que la búsqueda.
-                self.renaming = None;
+                self.workspace.cancel_rename();
                 self.rename_text.clear();
             } else {
                 self.search.clear();
             }
         }
-        if close_tab && let Some(idx) = self.active_note() {
-            self.request_close_tab(idx);
+        if close_tab && let Some(id) = self.workspace.active() {
+            self.request_close_tab(id);
         }
     }
 
@@ -484,13 +300,13 @@ impl App {
         if !ctx.input(|input| input.viewport().close_requested()) {
             return;
         }
-        if self.pending.is_some() {
+        if self.closing.is_asking() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             return;
         }
-        if let Some(idx) = self.next_dirty_tab() {
+        if let Some(id) = self.workspace.dirty_tab() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.pending = Some(CloseTarget::Window(idx));
+            self.closing.ask(id, Intent::Window);
         }
         // Sin tabs sucios: no se cancela, eframe cierra la ventana.
     }
@@ -498,54 +314,27 @@ impl App {
     fn rescan_on_focus(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|input| input.viewport().focused).unwrap_or(false);
         if focused && !self.was_focused {
-            self.rescan();
+            self.workspace.reconcile();
         }
         self.was_focused = focused;
     }
 
-    fn rescan(&mut self) {
-        let disk = store::discover(&self.data_dir);
-        let mut gone = Vec::new();
-
-        for idx in 0..self.notes.len() {
-            // Las notas sucias tienen prioridad: no se tocan.
-            if self.dirty.contains(&self.notes[idx].dir) {
-                continue;
-            }
-            match disk.iter().find(|found| found.dir == self.notes[idx].dir) {
-                Some(found) => {
-                    if found.mtime != self.notes[idx].mtime {
-                        let note = &mut self.notes[idx];
-                        note.title = found.title.clone();
-                        note.body = found.body.clone();
-                        note.mtime = found.mtime;
-                    }
-                }
-                None => gone.push(idx),
-            }
-        }
-
-        for idx in gone.into_iter().rev() {
-            self.remove_note(idx);
-        }
-
-        for found in disk {
-            if !self.notes.iter().any(|note| note.dir == found.dir) {
-                self.notes.push(found);
-            }
+    /// Después del modal: cierra el tab o sigue con la próxima nota sucia.
+    fn advance(&mut self, id: NoteId, intent: Intent) {
+        match intent {
+            Intent::Tab => self.workspace.close(id),
+            Intent::Window | Intent::Restart => match self.workspace.dirty_tab() {
+                Some(next) => self.closing.ask(next, intent),
+                None if intent == Intent::Restart => self.closing.finish(Action::Relaunch),
+                None => self.closing.finish(Action::CloseWindow),
+            },
         }
     }
 
-    fn advance_close(&mut self, target: CloseTarget) {
-        match target {
-            CloseTarget::Tab(idx) => self.close_tab(idx),
-            CloseTarget::Window(_) => {
-                if let Some(next) = self.next_dirty_tab() {
-                    self.pending = Some(CloseTarget::Window(next));
-                } else {
-                    self.close_now = true;
-                }
-            }
+    /// Toma la respuesta del modal y sigue el cierre.
+    fn advance_resolved(&mut self) {
+        if let Some((id, intent)) = self.closing.resolved() {
+            self.advance(id, intent);
         }
     }
 
@@ -681,11 +470,11 @@ impl App {
         self.theme = theme;
         self.order = order;
         if open_data {
-            let dir = self.data_dir.clone();
+            let dir = self.workspace.data_dir().to_path_buf();
             self.open_dir(&dir);
         }
         if open_trash {
-            let trash = store::trash_dir(&self.data_dir);
+            let trash = store::trash_dir(self.workspace.data_dir());
             match std::fs::create_dir_all(&trash) {
                 Ok(()) => self.open_dir(&trash),
                 Err(err) => self.error = Some(format!("No se pudo crear la papelera: {err}")),
@@ -768,17 +557,14 @@ impl App {
     /// Reinicia con el binario nuevo; si hay cambios sin guardar, primero pasa
     /// por el modal de cierre.
     fn request_restart(&mut self) {
-        self.restart = true;
-        if let Some(idx) = self.next_dirty_tab() {
-            self.pending = Some(CloseTarget::Window(idx));
-        } else {
-            self.close_now = true;
+        match self.workspace.dirty_tab() {
+            Some(id) => self.closing.ask(id, Intent::Restart),
+            None => self.closing.finish(Action::Relaunch),
         }
     }
 
     /// Abre el binario nuevo y deja que eframe cierre y guarde esta instancia.
     fn relaunch(&mut self) {
-        self.restart = false;
         let launched = update::exe_path()
             .map_err(|err| err.to_string())
             .and_then(|exe| {
@@ -792,13 +578,16 @@ impl App {
                     .map_err(|err| err.to_string())
             });
         match launched {
-            Ok(()) => self.close_now = true,
-            Err(err) => self.error = Some(format!("No se pudo reiniciar: {err}")),
+            Ok(()) => self.closing.finish(Action::CloseWindow),
+            Err(err) => {
+                self.closing.cancel();
+                self.error = Some(format!("No se pudo reiniciar: {err}"));
+            }
         }
     }
 
     fn tabs_bar(&mut self, ui: &mut egui::Ui) {
-        if self.tabs.is_empty() {
+        if self.workspace.tabs().is_empty() {
             self.hovered_tab = None;
             return;
         }
@@ -812,11 +601,11 @@ impl App {
             .id_salt("tabs")
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for pos in 0..self.tabs.len() {
-                        let (close, hovered) = self.tab_pill(ui, pos, prev_hover);
+                    for id in self.workspace.tabs().to_vec() {
+                        let (close, hovered) = self.tab_pill(ui, id, prev_hover);
                         close_tab = close_tab.or(close);
                         if hovered {
-                            hovered_tab = Some(self.tabs[pos]);
+                            hovered_tab = Some(id);
                         }
                     }
                 });
@@ -824,8 +613,8 @@ impl App {
         ui.add_space(2.0);
 
         self.hovered_tab = hovered_tab;
-        if let Some(idx) = close_tab {
-            self.request_close_tab(idx);
+        if let Some(id) = close_tab {
+            self.request_close_tab(id);
         }
     }
 
@@ -833,23 +622,20 @@ impl App {
     fn tab_pill(
         &mut self,
         ui: &mut egui::Ui,
-        pos: usize,
-        prev_hover: Option<usize>,
-    ) -> (Option<usize>, bool) {
-        let Some(&idx) = self.tabs.get(pos) else {
+        id: NoteId,
+        prev_hover: Option<NoteId>,
+    ) -> (Option<NoteId>, bool) {
+        let Some(note) = self.workspace.note(id) else {
             return (None, false);
         };
-        let Some(note) = self.notes.get(idx) else {
-            return (None, false);
-        };
-        let active = self.active == pos;
+        let active = self.workspace.active() == Some(id);
         let title = note.title.clone();
-        let dirty = self.dirty.contains(&note.dir);
-        let show_close = active || prev_hover == Some(idx);
+        let dirty = self.workspace.is_dirty(id);
+        let show_close = active || prev_hover == Some(id);
 
         let fill = if active {
             style::active_fill(ui.visuals())
-        } else if prev_hover == Some(idx) {
+        } else if prev_hover == Some(id) {
             ui.visuals().widgets.hovered.weak_bg_fill
         } else {
             egui::Color32::TRANSPARENT
@@ -881,12 +667,12 @@ impl App {
                         .sense(egui::Sense::click()),
                     );
                     if name.clicked() {
-                        self.active = pos;
+                        self.workspace.open(id);
                     }
                     if show_close
                         && icon_button(ui, Icon::Close, 16.0, "Cerrar tab", false).clicked()
                     {
-                        close = Some(idx);
+                        close = Some(id);
                     }
                 });
             })
@@ -943,19 +729,7 @@ impl App {
                 });
                 ui.add_space(4.0);
 
-                let query = store::fold(&self.search);
-                let mut indices: Vec<usize> = (0..self.notes.len()).collect();
-                match self.order {
-                    Order::Alphabetical => {
-                        indices.sort_by_cached_key(|&idx| store::fold(&self.notes[idx].title));
-                    }
-                    Order::Recent => indices.sort_by(|&a, &b| {
-                        self.notes[b].mtime.cmp(&self.notes[a].mtime).then_with(|| {
-                            store::fold(&self.notes[a].title)
-                                .cmp(&store::fold(&self.notes[b].title))
-                        })
-                    }),
-                }
+                let ids = self.workspace.visible(self.order, &self.search);
 
                 // La regla de la nota activa vive en el margen, no sobre el texto.
                 let rail_x = ui.max_rect().left() - 5.0;
@@ -967,20 +741,13 @@ impl App {
                         hovered = None;
                         let mut visibles = 0;
 
-                        for idx in indices {
-                            let note = &self.notes[idx];
-                            if !query.is_empty()
-                                && !store::fold(&note.title).contains(&query)
-                                && !store::fold(&note.body).contains(&query)
-                            {
-                                continue;
-                            }
+                        for id in ids {
                             visibles += 1;
 
-                            if self.renaming == Some(idx) {
+                            if self.workspace.editing() == Some(id) {
                                 let response = ui.add(
                                     egui::TextEdit::singleline(&mut self.rename_text)
-                                        .id(ui.make_persistent_id(("renombrar", idx)))
+                                        .id(ui.make_persistent_id(("renombrar", id)))
                                         .hint_text("Nombre de la nota")
                                         .desired_width(f32::INFINITY),
                                 );
@@ -1008,10 +775,13 @@ impl App {
                                 continue;
                             }
 
-                            let dirty = self.dirty.contains(&note.dir);
+                            let Some(note) = self.workspace.note(id) else {
+                                continue;
+                            };
+                            let dirty = self.workspace.is_dirty(id);
                             let snippet = snippet(&note.body);
-                            let is_active = self.tabs.get(self.active).copied() == Some(idx);
-                            let show_close = hovered == Some(idx);
+                            let is_active = self.workspace.active() == Some(id);
+                            let show_close = hovered == Some(id);
 
                             let bg = ui.painter().add(egui::Shape::Noop);
                             let row = ui
@@ -1060,7 +830,7 @@ impl App {
                                                 )
                                                 .clicked()
                                                 {
-                                                    pencil = Some(idx);
+                                                    pencil = Some(id);
                                                 }
                                                 if show_close {
                                                     if icon_button(
@@ -1072,7 +842,7 @@ impl App {
                                                     )
                                                     .clicked()
                                                     {
-                                                        delete = Some(idx);
+                                                        delete = Some(id);
                                                     }
                                                 } else {
                                                     // Reserva el lugar del `×` para que el lápiz no salte.
@@ -1085,7 +855,7 @@ impl App {
                                 .response;
 
                             if row.hovered() {
-                                hovered = Some(idx);
+                                hovered = Some(id);
                             }
                             if row.hovered() || is_active {
                                 let fill = if is_active {
@@ -1108,19 +878,19 @@ impl App {
                                 }
                             }
                             if row.clicked() {
-                                open = Some(idx);
+                                open = Some(id);
                             }
                             row.container_context_menu(|ui| {
                                 if ui.button("Abrir").clicked() {
-                                    open = Some(idx);
+                                    open = Some(id);
                                     ui.close();
                                 }
                                 if ui.button("Renombrar").clicked() {
-                                    pencil = Some(idx);
+                                    pencil = Some(id);
                                     ui.close();
                                 }
                                 if ui.button("Mover a papelera").clicked() {
-                                    delete = Some(idx);
+                                    delete = Some(id);
                                     ui.close();
                                 }
                             });
@@ -1128,7 +898,7 @@ impl App {
 
                         if visibles == 0 {
                             ui.add_space(8.0);
-                            if self.notes.is_empty() {
+                            if self.workspace.is_empty() {
                                 ui.weak("Todavía no hay notas.");
                                 ui.add_space(2.0);
                                 ui.weak(egui::RichText::new("Ctrl+N crea la primera").small());
@@ -1140,15 +910,15 @@ impl App {
             });
 
         self.hovered_row = hovered;
-        if let Some(idx) = open {
-            self.open_tab(idx);
+        if let Some(id) = open {
+            self.workspace.open(id);
         }
-        if let Some(idx) = delete {
-            self.trash_note(idx);
+        if let Some(id) = delete {
+            self.trash_note(id);
         }
-        if let Some(idx) = pencil {
+        if let Some(id) = pencil {
             self.commit_rename();
-            self.start_rename(idx);
+            self.start_rename(id);
         } else if commit {
             self.commit_rename();
         }
@@ -1164,7 +934,7 @@ impl App {
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
 
-            let Some(idx) = self.active_note() else {
+            let Some(id) = self.workspace.active() else {
                 ui.allocate_ui_with_layout(
                     ui.available_size(),
                     egui::Layout::top_down(egui::Align::Center),
@@ -1210,59 +980,56 @@ impl App {
                     // si cambia la escala del editor, recalcular.
                     let rows = (((ui.available_height() - 40.0) / 22.0).floor() as usize).max(1);
                     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        let body = ui.add(
-                            egui::TextEdit::multiline(&mut self.notes[idx].body)
-                                .id(editor_id)
-                                .desired_rows(rows)
-                                .hint_text("Escribí acá…")
-                                .font(egui::TextStyle::Name("editor".into()))
-                                .frame(egui::Frame::NONE)
-                                .margin(egui::Margin::same(0))
-                                .text_color(ui.visuals().text_color())
-                                .desired_width(width),
-                        );
-                        // El click secundario colapsa la selección dentro del
-                        // TextEdit: la restauramos para que siga resaltada
-                        // mientras el menú está abierto.
-                        if ui.input(|input| input.pointer.secondary_pressed())
-                            && let Some(selection) = ui
-                                .ctx()
-                                .data(|data| {
-                                    data.get_temp::<Option<egui::text_selection::CCursorRange>>(
-                                        menu_key,
-                                    )
-                                })
-                                .flatten()
-                            && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), editor_id)
-                        {
-                            state.cursor.set_char_range(Some(selection));
-                            state.store(ui.ctx(), editor_id);
-                        }
-                        if body.changed() {
-                            self.mark_dirty(idx);
-                        }
-                        if editor_context_menu(&body, &mut self.notes[idx].body, menu_key) {
-                            self.mark_dirty(idx);
-                        }
-                        ui.add_space(32.0);
+                        self.workspace.edit(id, |note| {
+                            let body = ui.add(
+                                egui::TextEdit::multiline(&mut note.body)
+                                    .id(editor_id)
+                                    .desired_rows(rows)
+                                    .hint_text("Escribí acá…")
+                                    .font(egui::TextStyle::Name("editor".into()))
+                                    .frame(egui::Frame::NONE)
+                                    .margin(egui::Margin::same(0))
+                                    .text_color(ui.visuals().text_color())
+                                    .desired_width(width),
+                            );
+                            // El click secundario colapsa la selección dentro del
+                            // TextEdit: la restauramos para que siga resaltada
+                            // mientras el menú está abierto.
+                            if ui.input(|input| input.pointer.secondary_pressed())
+                                && let Some(selection) = ui
+                                    .ctx()
+                                    .data(|data| {
+                                        data.get_temp::<Option<egui::text_selection::CCursorRange>>(
+                                            menu_key,
+                                        )
+                                    })
+                                    .flatten()
+                                && let Some(mut state) =
+                                    egui::TextEdit::load_state(ui.ctx(), editor_id)
+                            {
+                                state.cursor.set_char_range(Some(selection));
+                                state.store(ui.ctx(), editor_id);
+                            }
+                            let changed = body.changed();
+                            let menu_changed = editor_context_menu(&body, &mut note.body, menu_key);
+                            ui.add_space(32.0);
+                            changed || menu_changed
+                        });
                     });
                 });
         });
     }
 
     fn unsaved_modal(&mut self, ctx: &egui::Context) {
-        let Some(target) = self.pending else {
+        let Some((id, _)) = self.closing.question() else {
             return;
         };
-        let idx = match target {
-            CloseTarget::Tab(idx) | CloseTarget::Window(idx) => idx,
-        };
-        if idx >= self.notes.len() {
-            self.pending = None;
+        let Some(note) = self.workspace.note(id) else {
+            self.closing.cancel();
             return;
-        }
+        };
 
-        let title = self.notes[idx].title.clone();
+        let title = note.title.clone();
         let error = self.error.clone();
         let mut choice = None;
 
@@ -1292,27 +1059,22 @@ impl App {
         }
 
         match choice {
-            Some(Choice::Save) => match self.save_note(idx) {
+            Some(Choice::Save) => match self.save_note(id) {
                 Ok(()) => {
                     self.error = None;
-                    self.advance_close(target);
+                    self.advance_resolved();
                 }
                 Err(err) => {
                     // Queda sucia y el modal sigue abierto para reintentar.
                     self.error = Some(format!("No se pudo guardar: {err}"));
-                    self.pending = Some(target);
                 }
             },
             Some(Choice::Discard) => {
-                self.clear_dirty(idx);
-                self.advance_close(target);
+                self.workspace.clear_dirty(id);
+                self.advance_resolved();
             }
-            Some(Choice::Cancel) => {
-                self.pending = None;
-                self.close_now = false;
-                self.restart = false;
-            }
-            None => self.pending = Some(target),
+            Some(Choice::Cancel) => self.closing.cancel(),
+            None => {}
         }
     }
 
@@ -1423,13 +1185,10 @@ impl App {
         self.handle_close_request(&ctx);
         self.poll_update(&ctx);
 
-        if self.close_now {
-            self.close_now = false;
-            if self.restart {
-                self.relaunch();
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+        match self.closing.take() {
+            Some(Action::CloseWindow) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Some(Action::Relaunch) => self.relaunch(),
+            None => {}
         }
 
         self.handle_shortcuts(&ctx);
@@ -1441,7 +1200,7 @@ impl App {
         self.update_modal(&ctx);
 
         // Asegura el frame siguiente, donde se manda el `Close` real.
-        if self.close_now {
+        if self.closing.is_pending() {
             ctx.request_repaint();
         }
     }
@@ -1483,17 +1242,10 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let (tabs, active) = self.workspace.session();
         let persisted = Persisted {
-            tabs: self
-                .tabs
-                .iter()
-                .filter_map(|&idx| self.notes.get(idx).map(|note| note.title.clone()))
-                .collect(),
-            active: self
-                .tabs
-                .get(self.active)
-                .and_then(|&idx| self.notes.get(idx))
-                .map(|note| note.title.clone()),
+            tabs,
+            active,
             theme: self.theme,
             order: self.order,
         };
@@ -1520,54 +1272,6 @@ fn open_folder(path: &Path) -> std::io::Result<()> {
         ))),
         Err(err) => Err(err),
     }
-}
-
-/// Botón con el color de acento: la acción principal de un modal.
-fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.scope(|ui| {
-        let widgets = &mut ui.visuals_mut().widgets;
-        let fg = egui::Color32::from_rgb(0xf7, 0xfb, 0xfb);
-        widgets.inactive.weak_bg_fill = style::ACCENT;
-        widgets.hovered.weak_bg_fill = style::ACCENT.gamma_multiply(1.15);
-        widgets.active.weak_bg_fill = style::ACCENT.gamma_multiply(0.9);
-        for widget in [
-            &mut widgets.inactive,
-            &mut widgets.hovered,
-            &mut widgets.active,
-        ] {
-            widget.fg_stroke = egui::Stroke::new(1.0, fg);
-            widget.bg_stroke = egui::Stroke::NONE;
-        }
-        ui.button(text)
-    })
-    .inner
-}
-
-/// Texto con el punto de «sin guardar» al final, truncable como un solo bloque.
-fn title_job(
-    text: &str,
-    color: egui::Color32,
-    size: f32,
-    dot: Option<egui::Color32>,
-) -> egui::text::LayoutJob {
-    let format = egui::TextFormat {
-        font_id: egui::FontId::proportional(size),
-        color,
-        ..Default::default()
-    };
-    let mut job = egui::text::LayoutJob::default();
-    job.append(text, 0.0, format.clone());
-    if let Some(dot) = dot {
-        job.append(
-            "  •",
-            0.0,
-            egui::TextFormat {
-                color: dot,
-                ..format
-            },
-        );
-    }
-    job
 }
 
 /// Menú contextual del editor. Devuelve `true` si el cuerpo cambió.
@@ -1654,161 +1358,6 @@ fn pasted_text() -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
-/// Primeras dos líneas del cuerpo, con espacios colapsados, recortadas para la fila.
-fn snippet(body: &str) -> String {
-    let text = body
-        .lines()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if text.chars().count() > 90 {
-        let mut short: String = text.chars().take(90).collect();
-        short.push('…');
-        short
-    } else {
-        text
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Icon {
-    Menu,
-    Plus,
-    Pencil,
-    Close,
-    Minimize,
-    Maximize,
-    Restore,
-}
-
-/// Botón cuadrado con ícono dibujado (la fuente por defecto no tiene estos glifos).
-fn icon_button(
-    ui: &mut egui::Ui,
-    icon: Icon,
-    size: f32,
-    tooltip: &str,
-    danger: bool,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
-    let hovered = response.hovered();
-    let color = if danger && hovered {
-        egui::Color32::WHITE
-    } else if hovered {
-        ui.visuals().strong_text_color()
-    } else {
-        ui.visuals().weak_text_color()
-    };
-    if hovered {
-        let fill = if danger {
-            egui::Color32::from_rgb(190, 60, 55)
-        } else {
-            ui.visuals().widgets.hovered.weak_bg_fill
-        };
-        ui.painter().rect_filled(rect, 4.0, fill);
-    }
-    paint_icon(ui.painter(), icon, rect, color);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tooltip));
-    response.on_hover_text(tooltip)
-}
-
-fn paint_icon(painter: &egui::Painter, icon: Icon, rect: egui::Rect, color: egui::Color32) {
-    let stroke = egui::Stroke::new(1.5, color);
-    let center = rect.center();
-    let s = rect.width();
-
-    match icon {
-        Icon::Menu => {
-            for i in -1..=1 {
-                let y = center.y + i as f32 * s * 0.16;
-                painter.line_segment(
-                    [
-                        egui::pos2(center.x - s * 0.22, y),
-                        egui::pos2(center.x + s * 0.22, y),
-                    ],
-                    stroke,
-                );
-            }
-        }
-        Icon::Close => {
-            let r = s * 0.22;
-            painter.line_segment(
-                [center + egui::vec2(-r, -r), center + egui::vec2(r, r)],
-                stroke,
-            );
-            painter.line_segment(
-                [center + egui::vec2(r, -r), center + egui::vec2(-r, r)],
-                stroke,
-            );
-        }
-        Icon::Minimize => {
-            painter.line_segment(
-                [
-                    center + egui::vec2(-s * 0.22, s * 0.06),
-                    center + egui::vec2(s * 0.22, s * 0.06),
-                ],
-                stroke,
-            );
-        }
-        Icon::Maximize => {
-            painter.rect_stroke(
-                egui::Rect::from_center_size(center, egui::vec2(s * 0.42, s * 0.42)),
-                1,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-        }
-        Icon::Restore => {
-            let size = egui::vec2(s * 0.34, s * 0.34);
-            painter.rect_stroke(
-                egui::Rect::from_center_size(center + egui::vec2(s * 0.09, s * 0.09), size),
-                1,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-            painter.rect_stroke(
-                egui::Rect::from_center_size(center - egui::vec2(s * 0.09, s * 0.09), size),
-                1,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
-        }
-        Icon::Plus => {
-            painter.line_segment(
-                [
-                    center + egui::vec2(-s * 0.18, 0.0),
-                    center + egui::vec2(s * 0.18, 0.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    center + egui::vec2(0.0, -s * 0.18),
-                    center + egui::vec2(0.0, s * 0.18),
-                ],
-                stroke,
-            );
-        }
-        Icon::Pencil => {
-            let start = center + egui::vec2(-s * 0.28, s * 0.28);
-            let end = center + egui::vec2(s * 0.26, -s * 0.26);
-            painter.line_segment([start, end], egui::Stroke::new(2.0, color));
-            painter.add(egui::Shape::convex_polygon(
-                vec![
-                    start + egui::vec2(-s * 0.07, -s * 0.01),
-                    start + egui::vec2(s * 0.01, s * 0.07),
-                    start + egui::vec2(-s * 0.10, s * 0.10),
-                ],
-                color,
-                egui::Stroke::NONE,
-            ));
-        }
-    }
-}
-
 #[cfg(test)]
 mod ui_tests {
     use super::*;
@@ -1831,6 +1380,27 @@ mod ui_tests {
             .build_ui_state(|ui, app: &mut App| app.root_ui(ui), app);
         harness.run();
         harness
+    }
+
+    /// Id de la única nota del seed: los tests trabajan de a una.
+    fn only_id(app: &App) -> NoteId {
+        let ids = app.workspace.visible(Order::Alphabetical, "");
+        assert_eq!(ids.len(), 1, "el test espera una sola nota");
+        ids[0]
+    }
+
+    fn only_note(app: &App) -> &store::Note {
+        app.workspace.note(only_id(app)).unwrap()
+    }
+
+    /// Títulos visibles en orden alfabético.
+    fn titles(app: &App) -> Vec<String> {
+        app.workspace
+            .visible(Order::Alphabetical, "")
+            .into_iter()
+            .filter_map(|id| app.workspace.note(id))
+            .map(|note| note.title.clone())
+            .collect()
     }
 
     fn click(harness: &mut Harness<'static, App>, pos: Pos2) {
@@ -1862,8 +1432,12 @@ mod ui_tests {
         h.get_by_label("nota-a").click();
         h.run();
 
-        assert_eq!(h.state().tabs.len(), 1, "la nota debería abrirse en un tab");
-        assert_eq!(h.state().notes[0].title, "nota-a");
+        assert_eq!(
+            h.state().workspace.tabs().len(),
+            1,
+            "la nota debería abrirse en un tab"
+        );
+        assert_eq!(titles(h.state()), ["nota-a"]);
     }
 
     #[test]
@@ -1874,13 +1448,14 @@ mod ui_tests {
         // Sin `run()` previo: reproduce una sesión restaurada, donde el primer
         // frame ya dibuja el editor.
         let mut app = App::load(tmp.path().to_path_buf());
-        app.open_tab(0);
+        let id = only_id(&app);
+        app.workspace.open(id);
         let mut h = Harness::builder()
             .with_size(egui::vec2(1000.0, 700.0))
             .build_ui_state(|ui, app: &mut App| app.root_ui(ui), app);
         h.run();
 
-        assert_eq!(h.state().tabs.len(), 1);
+        assert_eq!(h.state().workspace.tabs().len(), 1);
     }
 
     #[test]
@@ -1896,7 +1471,7 @@ mod ui_tests {
         h.run();
 
         assert!(
-            h.state().is_dirty(0),
+            h.state().workspace.is_dirty(only_id(h.state())),
             "escribir debería marcar la nota sucia"
         );
         assert_eq!(
@@ -1908,7 +1483,7 @@ mod ui_tests {
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
         h.run();
 
-        assert!(!h.state().is_dirty(0));
+        assert!(!h.state().workspace.is_dirty(only_id(h.state())));
         assert!(
             h.state().saved_flash.is_some(),
             "guardar debería disparar el destello"
@@ -1927,7 +1502,7 @@ mod ui_tests {
 
         h.get_by_label("Renombrar").click();
         h.run();
-        assert_eq!(h.state().renaming, Some(0));
+        assert_eq!(h.state().workspace.editing(), Some(only_id(h.state())));
 
         h.event(egui::Event::Text("comprar pan".to_owned()));
         h.run();
@@ -1940,8 +1515,8 @@ mod ui_tests {
             "cuerpo\n",
             "renombrar no debe reescribir el cuerpo"
         );
-        assert!(h.state().renaming.is_none());
-        assert_eq!(h.state().notes[0].title, "comprar-pan");
+        assert!(h.state().workspace.editing().is_none());
+        assert_eq!(titles(h.state()), ["comprar-pan"]);
     }
 
     #[test]
@@ -2056,7 +1631,7 @@ mod ui_tests {
 
         assert!(tmp.path().join("nota-a").is_dir());
         assert!(!tmp.path().join("otro").exists());
-        assert_eq!(h.state().notes[0].title, "nota-a");
+        assert_eq!(titles(h.state()), ["nota-a"]);
     }
 
     #[test]
@@ -2070,7 +1645,7 @@ mod ui_tests {
         click(&mut h, Pos2::new(600.0, 300.0));
         h.event(egui::Event::Text("dos".to_owned()));
         h.run();
-        assert!(h.state().is_dirty(0));
+        assert!(h.state().workspace.is_dirty(only_id(h.state())));
 
         h.get_by_label("Renombrar").click();
         h.run();
@@ -2080,7 +1655,7 @@ mod ui_tests {
         h.run();
 
         assert!(
-            h.state().is_dirty(0),
+            h.state().workspace.is_dirty(only_id(h.state())),
             "el renombre no debe limpiar el sucio"
         );
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
@@ -2099,7 +1674,7 @@ mod ui_tests {
 
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::N);
         h.run();
-        assert_eq!(h.state().renaming, Some(0));
+        assert_eq!(h.state().workspace.editing(), Some(only_id(h.state())));
         assert_eq!(h.state().rename_text, "sin-titulo");
 
         h.event(egui::Event::Text("mi nota".to_owned()));
@@ -2132,14 +1707,9 @@ mod ui_tests {
         // Ambos matchean: uno por título, otro por cuerpo.
         let visibles = h
             .state()
-            .notes
-            .iter()
-            .filter(|note| {
-                let q = store::fold(&h.state().search);
-                store::fold(&note.title).contains(&q) || store::fold(&note.body).contains(&q)
-            })
-            .count();
-        assert_eq!(visibles, 2);
+            .workspace
+            .visible(Order::Alphabetical, &h.state().search);
+        assert_eq!(visibles.len(), 2);
 
         h.key_press(egui::Key::Escape);
         h.run();
@@ -2168,12 +1738,100 @@ mod ui_tests {
         h.get_by_label("Descartar").click();
         h.run();
 
-        assert!(h.state().tabs.is_empty(), "el tab debería cerrarse");
+        assert!(
+            h.state().workspace.tabs().is_empty(),
+            "el tab debería cerrarse"
+        );
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
             "uno\n",
             "descartar no debe escribir en disco"
         );
+    }
+
+    #[test]
+    fn modal_al_cerrar_tab_sucio_y_guardar() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click();
+        h.run();
+        click(&mut h, Pos2::new(600.0, 300.0));
+        h.event(egui::Event::Text("dos".to_owned()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        h.run();
+
+        h.get_by_label("Guardar").click();
+        h.run();
+
+        assert!(
+            h.state().workspace.tabs().is_empty(),
+            "guardar debería cerrar el tab"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("nota-a/note.md")).unwrap(),
+            "uno\ndos"
+        );
+    }
+
+    #[test]
+    fn modal_cancelar_deja_el_tab_abierto_y_sucio() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n")]);
+        let mut h = harness(tmp.path());
+
+        h.get_by_label("nota-a").click();
+        h.run();
+        click(&mut h, Pos2::new(600.0, 300.0));
+        h.event(egui::Event::Text("cambio".to_owned()));
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+        h.run();
+
+        h.get_by_label("Cancelar").click();
+        h.run();
+
+        assert_eq!(h.state().workspace.tabs().len(), 1);
+        assert!(h.state().workspace.is_dirty(only_id(h.state())));
+    }
+
+    #[test]
+    fn modal_de_ventana_recorre_las_notas_sucias() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(tmp.path(), &[("nota-a", "uno\n"), ("nota-b", "dos\n")]);
+        let mut h = harness(tmp.path());
+
+        for nota in ["nota-a", "nota-b"] {
+            h.get_by_label(nota).click();
+            h.run();
+            click(&mut h, Pos2::new(600.0, 300.0));
+            h.event(egui::Event::Text("cambio".to_owned()));
+            h.run();
+        }
+
+        click(&mut h, Pos2::new(983.0, 19.0));
+        assert!(
+            h.query_by_label("«nota-a» tiene cambios sin guardar.")
+                .is_some(),
+            "el modal debería empezar por el primer tab sucio"
+        );
+
+        h.get_by_label("Descartar").click();
+        h.run();
+        h.run();
+        assert!(
+            h.query_by_label("«nota-b» tiene cambios sin guardar.")
+                .is_some(),
+            "el modal debería seguir con la otra nota sucia"
+        );
+
+        h.get_by_label("Descartar").click();
+        h.run();
+        h.run();
+        assert!(h.state().workspace.dirty_tab().is_none());
+        assert!(h.query_by_label("Cambios sin guardar").is_none());
     }
 
     #[test]
@@ -2230,10 +1888,13 @@ mod ui_tests {
         h.run();
 
         assert!(
-            h.state().notes[0].body.is_empty(),
+            only_note(h.state()).body.is_empty(),
             "cortar debería vaciar la selección completa"
         );
-        assert!(h.state().is_dirty(0), "cortar debería marcar la nota sucia");
+        assert!(
+            h.state().workspace.is_dirty(only_id(h.state())),
+            "cortar debería marcar la nota sucia"
+        );
     }
 
     #[test]
@@ -2247,7 +1908,11 @@ mod ui_tests {
         h.get_by_label("Abrir").click();
         h.run();
 
-        assert_eq!(h.state().tabs.len(), 1, "el menú debería abrir la nota");
+        assert_eq!(
+            h.state().workspace.tabs().len(),
+            1,
+            "el menú debería abrir la nota"
+        );
     }
 
     #[test]

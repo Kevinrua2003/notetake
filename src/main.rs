@@ -1,7 +1,10 @@
 mod app;
+mod closing;
 mod store;
 mod style;
+mod ui;
 mod update;
+mod workspace;
 
 fn main() -> eframe::Result {
     let dir = store::data_dir();
@@ -35,8 +38,9 @@ fn main() -> eframe::Result {
 /// Icono de ventana y barra de tareas. En Wayland el compositor lo busca por
 /// `app_id` en `notetake.desktop`; ver README.
 fn app_icon() -> Option<eframe::egui::IconData> {
-    let img =
-        image::load_from_memory(include_bytes!("../assets/icon.png")).ok()?.to_rgba8();
+    let img = image::load_from_memory(include_bytes!("../assets/icon.png"))
+        .ok()?
+        .to_rgba8();
     let (width, height) = img.dimensions();
     Some(eframe::egui::IconData {
         rgba: img.into_raw(),

@@ -13,6 +13,7 @@ const TRASH_DIR: &str = "_trash";
 const FALLBACK_TITLE: &str = "sin-titulo";
 const SLUG_MAX: usize = 80;
 
+#[derive(Clone)]
 pub struct Note {
     /// Carpeta de la nota.
     pub dir: PathBuf,
@@ -105,8 +106,8 @@ pub fn create(data_dir: &Path) -> io::Result<Note> {
 }
 
 /// Escribe el cuerpo de forma atómica y, si el slug del título cambia el nombre,
-/// renombra la carpeta. Devuelve la carpeta final.
-pub fn save(data_dir: &Path, current_dir: &Path, title: &str, body: &str) -> io::Result<PathBuf> {
+/// renombra la carpeta. Devuelve la nota ya releída, con título y mtime finales.
+pub fn save(data_dir: &Path, current_dir: &Path, title: &str, body: &str) -> io::Result<Note> {
     write_atomic(current_dir, body)?;
 
     let slug = slugify(title);
@@ -114,25 +115,25 @@ pub fn save(data_dir: &Path, current_dir: &Path, title: &str, body: &str) -> io:
         .file_name()
         .is_some_and(|name| name == slug.as_str())
     {
-        return Ok(current_dir.to_path_buf());
+        return read(current_dir);
     }
     let target = data_dir.join(unique_name(data_dir, &slug, Some(current_dir)));
     fs::rename(current_dir, &target)?;
-    Ok(target)
+    read(&target)
 }
 
 /// Renombra la carpeta según el slug del título, sin tocar `note.md`.
-pub fn rename(data_dir: &Path, current_dir: &Path, title: &str) -> io::Result<PathBuf> {
+pub fn rename(data_dir: &Path, current_dir: &Path, title: &str) -> io::Result<Note> {
     let slug = slugify(title);
     if current_dir
         .file_name()
         .is_some_and(|name| name == slug.as_str())
     {
-        return Ok(current_dir.to_path_buf());
+        return read(current_dir);
     }
     let target = data_dir.join(unique_name(data_dir, &slug, Some(current_dir)));
     fs::rename(current_dir, &target)?;
-    Ok(target)
+    read(&target)
 }
 
 /// Carpeta donde van las notas borradas (puede no existir todavía).
@@ -283,13 +284,15 @@ mod tests {
         assert_eq!(body_of(&note.dir), "");
 
         let dir = save(data, &note.dir, "Mi Nota", "hola\nmundo").unwrap();
-        assert_eq!(dir.file_name().unwrap(), "mi-nota");
+        assert_eq!(dir.dir.file_name().unwrap(), "mi-nota");
+        assert_eq!(dir.title, "mi-nota");
+        assert_eq!(dir.body, "hola\nmundo");
         assert!(!note.dir.exists());
 
-        let leida = read(&dir).unwrap();
+        let leida = read(&dir.dir).unwrap();
         assert_eq!(leida.title, "mi-nota");
         assert_eq!(leida.body, "hola\nmundo");
-        assert_eq!(leida.dir, dir);
+        assert_eq!(leida.dir, dir.dir);
         assert_ne!(leida.mtime, UNIX_EPOCH);
     }
 
@@ -300,9 +303,9 @@ mod tests {
         let note = create(data).unwrap();
 
         let dir = save(data, &note.dir, "atomic", "cuerpo").unwrap();
-        assert!(!dir.join(NOTE_TMP).exists());
+        assert!(!dir.dir.join(NOTE_TMP).exists());
         assert!(!note.dir.join(NOTE_TMP).exists());
-        assert_eq!(body_of(&dir), "cuerpo");
+        assert_eq!(body_of(&dir.dir), "cuerpo");
     }
 
     #[test]
@@ -312,18 +315,18 @@ mod tests {
 
         let a = create(data).unwrap();
         let a = save(data, &a.dir, "primera", "uno").unwrap();
-        assert_eq!(a.file_name().unwrap(), "primera");
+        assert_eq!(a.dir.file_name().unwrap(), "primera");
 
         let b = create(data).unwrap();
         let b = save(data, &b.dir, "primera", "dos").unwrap();
-        assert_eq!(b.file_name().unwrap(), "primera-2");
-        assert_eq!(body_of(&b), "dos");
+        assert_eq!(b.dir.file_name().unwrap(), "primera-2");
+        assert_eq!(body_of(&b.dir), "dos");
 
-        let renombrada = save(data, &a, "segunda", "uno bis").unwrap();
-        assert_eq!(renombrada.file_name().unwrap(), "segunda");
-        assert!(!a.exists());
-        assert_eq!(body_of(&renombrada), "uno bis");
-        assert_eq!(body_of(&b), "dos");
+        let renombrada = save(data, &a.dir, "segunda", "uno bis").unwrap();
+        assert_eq!(renombrada.dir.file_name().unwrap(), "segunda");
+        assert!(!a.dir.exists());
+        assert_eq!(body_of(&renombrada.dir), "uno bis");
+        assert_eq!(body_of(&b.dir), "dos");
     }
 
     #[test]
@@ -332,9 +335,9 @@ mod tests {
         let data = tmp.path();
         let note = create(data).unwrap();
         let dir = save(data, &note.dir, "sin-titulo", "algo").unwrap();
-        assert_eq!(dir, note.dir);
-        assert!(dir.is_dir());
-        assert_eq!(body_of(&dir), "algo");
+        assert_eq!(dir.dir, note.dir);
+        assert!(dir.dir.is_dir());
+        assert_eq!(body_of(&dir.dir), "algo");
     }
 
     #[test]
@@ -347,16 +350,19 @@ mod tests {
         let b = create(data).unwrap();
         let b = save(data, &b.dir, "segunda", "dos").unwrap();
 
-        let movida = rename(data, &a, "Comprar Café").unwrap();
-        assert_eq!(movida.file_name().unwrap(), "comprar-cafe");
-        assert!(!a.exists());
-        assert_eq!(body_of(&movida), "uno");
+        let movida = rename(data, &a.dir, "Comprar Café").unwrap();
+        assert_eq!(movida.dir.file_name().unwrap(), "comprar-cafe");
+        assert!(!a.dir.exists());
+        assert_eq!(body_of(&movida.dir), "uno");
 
-        let otra = rename(data, &b, "comprar cafe").unwrap();
-        assert_eq!(otra.file_name().unwrap(), "comprar-cafe-2");
-        assert_eq!(body_of(&otra), "dos");
+        let otra = rename(data, &b.dir, "comprar cafe").unwrap();
+        assert_eq!(otra.dir.file_name().unwrap(), "comprar-cafe-2");
+        assert_eq!(body_of(&otra.dir), "dos");
 
-        assert_eq!(rename(data, &otra, "comprar cafe").unwrap(), otra);
+        assert_eq!(
+            rename(data, &otra.dir, "comprar cafe").unwrap().dir,
+            otra.dir
+        );
     }
 
     #[test]
@@ -366,16 +372,16 @@ mod tests {
 
         let a = create(data).unwrap();
         let a = save(data, &a.dir, "nota", "original").unwrap();
-        trash(data, &a).unwrap();
-        assert!(!a.exists());
+        trash(data, &a.dir).unwrap();
+        assert!(!a.dir.exists());
         let trash_dir = data.join(TRASH_DIR);
         assert_eq!(body_of(&trash_dir.join("nota")), "original");
 
         let b = create(data).unwrap();
         let b = save(data, &b.dir, "nota", "segunda").unwrap();
-        assert_eq!(b.file_name().unwrap(), "nota");
-        trash(data, &b).unwrap();
-        assert!(!b.exists());
+        assert_eq!(b.dir.file_name().unwrap(), "nota");
+        trash(data, &b.dir).unwrap();
+        assert!(!b.dir.exists());
         assert_eq!(body_of(&trash_dir.join("nota")), "original");
         assert_eq!(body_of(&trash_dir.join("nota-2")), "segunda");
     }

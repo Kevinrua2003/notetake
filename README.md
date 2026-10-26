@@ -79,7 +79,7 @@ lugar para adjuntos más adelante.
 ## Desarrollo
 
 ```bash
-cargo test            # 12 de storage + 19 de UI + 4 de actualizaciones + 1 de contraste
+cargo test            # 64: 12 storage + 15 workspace + 6 cierre + 4 widgets + 22 UI + 4 actualizaciones + 1 contraste
 cargo run             # datos reales
 NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 ```
@@ -89,11 +89,18 @@ NOTETAKE_DIR=/tmp/notetake-dev cargo run   # sandbox
 - `src/store.rs` — acceso a disco sin dependencias: descubrir, leer, guardar
   atómico (`note.md.tmp` + `rename`), renombrar, mover a `_trash`, slug y fold
   de acentos.
-- `src/app.rs` — estado y UI egui: barra de título propia, ajustes (tema, orden
-  y carpetas), lista, búsqueda, tabs, renombre inline, menús contextuales, modal
-  y rescan al recuperar foco.
+- `src/workspace.rs` — notas, tabs, foco, cambios sin guardar y renombre con
+  `NoteId` estable: los índices no salen del módulo. Es dueño del disco
+  (crear, guardar, renombrar, papelera y reconciliación al recuperar foco).
+- `src/closing.rs` — máquina del cierre: un solo estado (preguntando, cerrando o
+  relanzando) en vez de tres banderas sueltas.
+- `src/ui.rs` — widgets dibujados a mano: íconos, botón de acento, título con el
+  punto de «sin guardar» y recorte del snippet de la fila.
+- `src/app.rs` — UI egui y estado de vista: barra de título propia, ajustes
+  (tema, orden y carpetas), lista, búsqueda, menús contextuales y modales.
 - `src/update.rs` — chequeo e instalación desde GitHub Releases (solo Linux).
 - `src/main.rs` — arranque, resolución del data dir, ventana e icono.
+- `CONTEXT.md` — vocabulario del dominio; las decisiones están en `docs/adr/`.
 - `assets/icon.png` — icono de la app (512 px, esquinas redondeadas).
 - `assets/notetake.desktop` — entrada de escritorio para el icono del dock.
 - `assets/InterVariable.ttf` — fuente incrustada; licencia OFL en
